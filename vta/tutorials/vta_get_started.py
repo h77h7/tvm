@@ -71,7 +71,7 @@ from tvm.contrib import util
 from vta.testing import simulator
 
 # We read the Pynq RPC host IP address and port number from the OS environment
-host = os.environ.get("VTA_RPC_HOST", "192.168.2.99")
+host = os.environ.get("VTA_RPC_HOST", "192.168.0.4")
 port = int(os.environ.get("VTA_RPC_PORT", "9091"))
 
 # We configure both the bitstream and the runtime system on the Pynq

@@ -43,7 +43,7 @@ from tvm import relay
 from tvm.relay import testing
 import tvm
 from tvm import te
-from tvm.contrib import graph_runtime
+from tvm.contrib.debugger import debug_runtime as graph_runtime
 
 ######################################################################
 # Define Neural Network in Relay
@@ -95,7 +95,7 @@ print(mod.astext(show_meta_data=False))
 # in this example. Then the machine code will be generated as the module library.
 
 opt_level = 3
-target = tvm.target.cuda()
+target = tvm.target.intel_graphics()
 with tvm.transform.PassContext(opt_level=opt_level):
     graph, lib, params = relay.build(mod, target, params=params)
 

@@ -109,7 +109,7 @@ if env.TARGET not in ["sim", "tsim"]:
     # Otherwise if you have a device you want to program directly from
     # the host, make sure you've set the variables below to the IP of
     # your board.
-    device_host = os.environ.get("VTA_RPC_HOST", "192.168.2.99")
+    device_host = os.environ.get("VTA_RPC_HOST", "192.168.0.4")
     device_port = os.environ.get("VTA_RPC_PORT", "9091")
     if not tracker_host or not tracker_port:
         remote = rpc.connect(device_host, int(device_port))
@@ -220,7 +220,7 @@ with autotvm.tophub.context(target):
 # and an input test image.
 
 # Download ImageNet categories
-categ_url = "https://github.com/uwsaml/web-data/raw/master/vta/models/"
+categ_url = "https://github.com/uwsampl/web-data/raw/main/vta/models/"
 categ_fn = "synset.txt"
 download.download(join(categ_url, categ_fn), categ_fn)
 synset = eval(open(categ_fn).read())
