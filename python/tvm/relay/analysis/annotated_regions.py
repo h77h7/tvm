@@ -17,7 +17,7 @@
 # pylint: disable=no-else-return, unidiomatic-typecheck, invalid-name, unused-import
 """Regions used in Relay."""
 
-from tvm.runtime import Object
+from ...runtime import Object
 from . import _ffi_api
 
 
@@ -37,10 +37,9 @@ class AnnotatedRegionSet(Object):
             The region end annotation.
 
         """
-        self.__init_handle_by_constructor__(_ffi_api.AnnotatedRegionSet,
-                                            expr,
-                                            region_begin_op,
-                                            region_end_op)
+        self.__init_handle_by_constructor__(
+            _ffi_api.AnnotatedRegionSet, expr, region_begin_op, region_end_op
+        )
 
     def __len__(self):
         return len(self.regions)

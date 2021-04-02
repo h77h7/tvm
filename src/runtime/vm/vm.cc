@@ -24,16 +24,18 @@
 
 #include <dmlc/memory_io.h>
 #include <tvm/runtime/container.h>
+#include <tvm/runtime/logging.h>
 #include <tvm/runtime/memory.h>
 #include <tvm/runtime/object.h>
 #include <tvm/runtime/vm/vm.h>
-#include <tvm/support/logging.h>
 
 #include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+
+#include "../file_utils.h"
 
 using namespace tvm::runtime;
 
@@ -62,14 +64,23 @@ std::ostream& operator<<(std::ostream& os, const VMFunction& vm_func) {
   return os;
 }
 
-inline ObjectRef CopyTo(ObjectRef src, const DLContext& ctx) {
+inline ObjectRef CopyTo(ObjectRef src, const DLDevice& dev) {
   if (src->IsInstance<NDArray::ContainerType>()) {
     auto nd_array = Downcast<NDArray>(src);
-    if (nd_array->ctx.device_type != ctx.device_type) {
-      return nd_array.CopyTo(ctx);
+    if (nd_array->device.device_type != dev.device_type) {
+      return nd_array.CopyTo(dev);
     }
+    return src;
+  } else {
+    ICHECK(src->IsInstance<ADTObj>())
+        << "VM data must be NDArray or a list of NDArray, but received: " << src->_type_key;
+    std::vector<ObjectRef> ret;
+    ADT adt = Downcast<ADT>(src);
+    for (size_t i = 0; i < adt.size(); i++) {
+      ret.push_back(CopyTo(adt[i], dev));
+    }
+    return ADT(adt->tag, ret.begin(), ret.end());
   }
-  return src;
 }
 
 std::vector<int64_t> ToShape(NDArray shape_tensor) {
@@ -84,7 +95,7 @@ std::vector<int64_t> ToShape(NDArray shape_tensor) {
 
   // Otherwise we should be rank-1, and we will extract the number of dimensions
   // for the output vector.
-  CHECK_EQ(rank, 1U) << "shape tensor should be a k-length vector, found " << rank;
+  ICHECK_EQ(rank, 1U) << "shape tensor should be a k-length vector, found " << rank;
   int64_t ndim = shape_tensor.Shape().at(0);
   shape.resize(ndim);
 
@@ -106,53 +117,55 @@ PackedFunc VirtualMachine::GetFunction(const std::string& name,
                                        const ObjectPtr<Object>& sptr_to_self) {
   if (name == "invoke") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      CHECK(exec_) << "The executable is not created yet.";
+      ICHECK(exec_) << "The executable is not created yet.";
       std::string func_name = args[0];
       auto git = exec_->global_map.find(func_name);
-      CHECK(git != exec_->global_map.end())
+      ICHECK(git != exec_->global_map.end())
           << "Cannot find function " << func_name << " in the executable";
       auto func = exec_->functions[git->second];
       if (func.params.empty()) {
         *rv = Invoke(func, {});
       } else {
         auto it = inputs_.find(func_name);
-        CHECK(it != inputs_.end()) << "Input has not been set for function " << func_name;
+        ICHECK(it != inputs_.end()) << "Input has not been set for function " << func_name;
         const std::vector<ObjectRef>& func_args = it->second;
         *rv = Invoke(func, func_args);
       }
     });
   } else if (name == "init") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      CHECK_EQ(args.size() % 3, 0);
-      std::vector<TVMContext> contexts;
+      ICHECK_EQ(args.size() % 3, 0);
+      std::vector<Device> devices;
       std::vector<AllocatorType> alloc_types;
       for (int i = 0; i < args.size() / 3; ++i) {
-        TVMContext ctx;
+        Device dev;
         int device_type = args[i * 3];
-        ctx.device_type = DLDeviceType(device_type);
-        ctx.device_id = args[i * 3 + 1];
+        dev.device_type = DLDeviceType(device_type);
+        dev.device_id = args[i * 3 + 1];
         int type = args[i * 3 + 2];
-        contexts.push_back(ctx);
+        devices.push_back(dev);
         alloc_types.push_back(AllocatorType(type));
       }
-      this->Init(contexts, alloc_types);
+      this->Init(devices, alloc_types);
     });
   } else if (name == "set_input") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      CHECK(exec_) << "The executable is not created yet.";
+      ICHECK(exec_) << "The executable is not created yet.";
       std::string func_name = args[0];
       auto gvit = exec_->global_map.find(func_name);
-      CHECK(gvit != exec_->global_map.end()) << "Cannot find function " << func_name;
+      ICHECK(gvit != exec_->global_map.end()) << "Cannot find function " << func_name;
       auto func_index = gvit->second;
       const auto& vm_func = exec_->functions[func_index];
       const auto& param_names = vm_func.params;
-      // TODO(icemelon9): For heterogeneous execution, get input device information
-      TVMContext ctx = ctxs_[0];
-      CHECK_EQ(args.size() - 1, param_names.size())
+      ICHECK_EQ(args.size() - 1, param_names.size())
           << "The number of provided parameters doesn't match the number of arguments";
+      ICHECK_EQ(param_names.size(), vm_func.params_device_type.size())
+          << "The number of provided parameters doesn't match the number of assigned devices";
       std::vector<ObjectRef> func_args(param_names.size());
       for (int i = 1; i < args.size(); ++i) {
-        ObjectRef obj = CopyTo(args[i], ctx);
+        Index device_type = vm_func.params_device_type[i - 1];
+        Device dev = GetDevice(device_type);
+        ObjectRef obj = CopyTo(args[i], dev);
         func_args[i - 1] = obj;
       }
       inputs_.erase(func_name);
@@ -164,18 +177,13 @@ PackedFunc VirtualMachine::GetFunction(const std::string& name,
   }
 }
 
-TVMContext VirtualMachine::GetParamsContext() const {
-  CHECK(!ctxs_.empty()) << "Context has not been initialized yet.";
+inline Device VirtualMachine::GetDevice(Index device_type) const {
+  ICHECK_GE(devices_.size(), device_type) << "devices_ doesn't contain device:" << device_type;
 
-  // Use the fallback device if no device index is available.
-  int fallback_device_type = static_cast<int>(ctxs_[0].device_type);
-  // TODO(wweic): For heterogeneous execution, get device information from byte
-
-  const auto& cit =
-      std::find_if(ctxs_.begin(), ctxs_.end(), [&fallback_device_type](const TVMContext& c) {
-        return fallback_device_type == static_cast<int>(c.device_type);
-      });
-  return (cit == ctxs_.end() ? ctxs_[0] : *cit);
+  auto dev = devices_[device_type];
+  ICHECK_EQ(static_cast<Index>(dev.device_type), device_type)
+      << "device type " << device_type << " has not been initialized in the device list.";
+  return dev;
 }
 
 void VirtualMachine::PushFrame(Index arg_count, Index ret_pc, const VMFunction& vm_func) {
@@ -184,7 +192,7 @@ void VirtualMachine::PushFrame(Index arg_count, Index ret_pc, const VMFunction& 
 }
 
 Index VirtualMachine::PopFrame() {
-  CHECK_GT(frames_.size(), 0);
+  ICHECK_GT(frames_.size(), 0);
   const VMFrame& fr = frames_.back();
   func_index_ = fr.func_index;
   code_ = fr.code;
@@ -216,9 +224,9 @@ ObjectRef VirtualMachine::Invoke(const VMFunction& func, const std::vector<Objec
 }
 
 ObjectRef VirtualMachine::Invoke(const std::string& name, const std::vector<ObjectRef>& args) {
-  CHECK(exec_) << "The executable has not been created yet.";
+  ICHECK(exec_) << "The executable has not been created yet.";
   auto it = exec_->global_map.find(name);
-  CHECK(it != exec_->global_map.end()) << "Cannot find function " << name << " in the executable";
+  ICHECK(it != exec_->global_map.end()) << "Cannot find function " << name << " in the executable";
   auto func_index_ = it->second;
   DLOG(INFO) << "Invoke Global " << name << " at index " << func_index_;
   return Invoke(exec_->functions[func_index_], args);
@@ -239,6 +247,7 @@ void VirtualMachine::InvokePacked(Index packed_index, const PackedFunc& func, In
   std::vector<int> codes(arity);
   runtime::TVMArgsSetter setter(values.data(), codes.data());
   int idx = 0;
+  bool is_empty_output = false;
   for (Index i = 0; i < arg_count; i++) {
     if (const auto* dt_cell = args[i].as<ADTObj>()) {
       for (size_t fi = 0; fi < dt_cell->size; ++fi) {
@@ -248,23 +257,36 @@ void VirtualMachine::InvokePacked(Index packed_index, const PackedFunc& func, In
       }
     } else {
       auto nd_array = Downcast<NDArray>(args[i]);
+      // We can safely skip CallPacked if there is only one
+      // output and it is empty.
+      if (i == arg_count - 1 && output_size == 1) {
+        for (const auto& dim : nd_array.Shape()) {
+          if (!dim) {
+            is_empty_output = true;
+            break;
+          }
+        }
+      }
       setter(idx++, nd_array);
     }
   }
 
-  TVMRetValue rv;
-  func.CallPacked(TVMArgs(values.data(), codes.data(), arity), &rv);
+  if (!is_empty_output) {
+    TVMRetValue rv;
+    func.CallPacked(TVMArgs(values.data(), codes.data(), arity), &rv);
+  }
 }
 
 void VirtualMachine::LoadExecutable(const Executable* exec) {
-  CHECK(exec) << "The executable is not created yet.";
+  ICHECK(exec) << "The executable is not created yet.";
   exec_ = exec;
 
-  runtime::Module lib = exec_->lib;
-  // Get the list of packed functions.
-  CHECK(exec->primitive_map.empty() || lib.operator->())
-      << "runtime module should have been built for primitive functions"
-      << "\n";
+  runtime::Module lib = exec_->GetLib();
+
+  ICHECK(exec->primitive_map.empty() || lib.operator->())
+      << "If the executable has declared primitive functions, the"
+      << "generated kernel library must non-be null.";
+
   for (const auto& it : exec_->primitive_map) {
     const auto& packed_name = it.first;
     auto packed_index = static_cast<size_t>(it.second);
@@ -272,21 +294,27 @@ void VirtualMachine::LoadExecutable(const Executable* exec) {
       packed_funcs_.resize(packed_index + 1);
     }
     tvm::runtime::PackedFunc pf = lib.GetFunction(packed_name, true);
-    CHECK(pf != nullptr) << "Cannot find function in module: " << packed_name;
+    ICHECK(pf != nullptr) << "Cannot find function in module: " << packed_name;
     packed_funcs_[packed_index] = pf;
   }
   for (size_t i = 0; i < packed_funcs_.size(); ++i) {
-    CHECK(packed_funcs_[i] != nullptr) << "Packed function " << i << " is not initialized";
+    ICHECK(packed_funcs_[i] != nullptr) << "Packed function " << i << " is not initialized";
   }
 }
 
-void VirtualMachine::Init(const std::vector<TVMContext>& ctxs,
+void VirtualMachine::Init(const std::vector<Device>& devs,
                           const std::vector<AllocatorType>& alloc_types) {
-  CHECK_EQ(ctxs.size(), alloc_types.size());
-  ctxs_ = ctxs;
-  for (size_t i = 0; i < ctxs.size(); ++i) {
-    auto alloc = MemoryManager::GetOrCreateAllocator(ctxs[i], alloc_types[i]);
-    allocators_.emplace(ctxs[i], alloc);
+  ICHECK_EQ(devs.size(), alloc_types.size());
+  // Cache the device
+  for (size_t i = 0; i < devs.size(); i++) {
+    auto dev_type = static_cast<size_t>(devs[i].device_type);
+    auto alloc = MemoryManager::GetOrCreateAllocator(devs[i], alloc_types[i]);
+    if (devices_.size() <= dev_type) {
+      devices_.resize(dev_type + 1);
+      allocators_.resize(dev_type + 1);
+    }
+    devices_[dev_type] = devs[i];
+    allocators_[dev_type] = alloc;
   }
 }
 
@@ -331,17 +359,14 @@ inline int64_t VirtualMachine::LoadScalarInt(Index r) const {
 }
 
 void VirtualMachine::RunLoop() {
-  CHECK(this->exec_);
-  CHECK(this->code_);
+  ICHECK(this->exec_);
+  ICHECK(this->code_);
   pc_ = 0;
   Index frame_start = frames_.size();
   while (true) {
   main_loop:
     auto const& instr = code_[this->pc_];
     DLOG(INFO) << "Executing(" << pc_ << "): " << instr;
-#if USE_RELAY_DEBUG
-    InstructionPrint(std::cout, instr);
-#endif  // USE_RELAY_DEBUG
 
     switch (instr.op) {
       case Opcode::Move: {
@@ -364,8 +389,8 @@ void VirtualMachine::RunLoop() {
         }
 
         if (!const_pool_[instr.const_index].defined()) {
-          // TODO(wweic) ctx could be obtained from the ctxs list.
-          const_pool_[instr.const_index] = CopyTo(constant_obj, ctxs_[0]);
+          Device dev = GetDevice(exec_->const_device_type[instr.const_index]);
+          const_pool_[instr.const_index] = CopyTo(constant_obj, dev);
         }
         WriteRegister(instr.dst, const_pool_[instr.const_index]);
         pc_++;
@@ -389,7 +414,7 @@ void VirtualMachine::RunLoop() {
       }
       case Opcode::InvokePacked: {
         DLOG(INFO) << "InvokedPacked " << instr.packed_index << " arity=" << instr.arity;
-        CHECK_LE(instr.packed_index, packed_funcs_.size());
+        ICHECK_LE(instr.packed_index, packed_funcs_.size());
         const auto& func = packed_funcs_[instr.packed_index];
         const auto& arity = instr.arity;
         std::vector<ObjectRef> args;
@@ -447,10 +472,10 @@ void VirtualMachine::RunLoop() {
         int32_t target_val = LoadScalarInt(instr.if_op.target);
 
         if (test_val == target_val) {
-          CHECK_NE(instr.if_op.true_offset, 0);
+          ICHECK_NE(instr.if_op.true_offset, 0);
           pc_ += instr.if_op.true_offset;
         } else {
-          CHECK_NE(instr.if_op.false_offset, 0);
+          ICHECK_NE(instr.if_op.false_offset, 0);
           pc_ += instr.if_op.false_offset;
         }
 
@@ -473,11 +498,9 @@ void VirtualMachine::RunLoop() {
         goto main_loop;
       }
       case Opcode::AllocTensorReg: {
-        DLContext cpu_ctx;
-        cpu_ctx.device_type = kDLCPU;
-        cpu_ctx.device_id = 0;
+        Device cpu_dev = GetDevice(static_cast<Index>(kDLCPU));
         auto shape_obj = ReadRegister(instr.alloc_tensor_reg.shape_register);
-        NDArray shape_tensor = Downcast<NDArray>(CopyTo(shape_obj, cpu_ctx));
+        NDArray shape_tensor = Downcast<NDArray>(CopyTo(shape_obj, cpu_dev));
         auto shape = ToShape(shape_tensor);
         auto storage_obj = ReadRegister(instr.alloc_tensor_reg.storage);
         auto storage = Downcast<Storage>(storage_obj);
@@ -511,14 +534,16 @@ void VirtualMachine::RunLoop() {
         auto size = LoadScalarInt(instr.alloc_storage.allocation_size);
         auto alignment = instr.alloc_storage.alignment;
 
-        DLOG(INFO) << "AllocStorage: allocation_size=" << size << "alignment=" << alignment
-                   << "dtype_hint=" << DLDataType2String(instr.alloc_storage.dtype_hint);
+        DLOG(INFO) << "AllocStorage: allocation_size=" << size << ", alignment=" << alignment
+                   << ", dtype_hint=" << DLDataType2String(instr.alloc_storage.dtype_hint)
+                   << ", device_type=" << instr.alloc_storage.device_type;
 
         auto storage_obj = SimpleObjAllocator().make_object<StorageObj>();
-        auto it = allocators_.find(ctxs_[0]);
-        CHECK(it != allocators_.end())
-            << "Did you forget to init the VirtualMachine with contexts?";
-        auto alloc = it->second;
+        auto dev_type = instr.alloc_storage.device_type;
+        ICHECK_LT(static_cast<size_t>(dev_type), allocators_.size())
+            << "Memory allocator for device " << dev_type << " has not been initialized";
+        auto* alloc = allocators_[dev_type];
+        ICHECK(alloc) << "Did you forget to init the VirtualMachine with devices?";
         storage_obj->buffer = alloc->Alloc(size, alignment, instr.alloc_storage.dtype_hint);
         Storage storage(storage_obj);
         WriteRegister(instr.dst, storage);
@@ -553,23 +578,36 @@ void VirtualMachine::RunLoop() {
         }
       }
       case Opcode::ReshapeTensor: {
-        DLContext cpu_ctx;
-        cpu_ctx.device_type = kDLCPU;
-        cpu_ctx.device_id = 0;
+        Device cpu_dev = GetDevice(static_cast<Index>(kDLCPU));
         auto tensor_obj = ReadRegister(instr.reshape_tensor.tensor);
         NDArray tensor_arr = Downcast<NDArray>(tensor_obj);
         // Read the shape from shape tensor
         auto shape_obj = ReadRegister(instr.reshape_tensor.newshape);
-        NDArray shape_tensor = Downcast<NDArray>(CopyTo(shape_obj, cpu_ctx));
+        NDArray shape_tensor = Downcast<NDArray>(CopyTo(shape_obj, cpu_dev));
         const DLTensor* dl_tensor = shape_tensor.operator->();
-        CHECK_EQ(dl_tensor->dtype.code, 0u);
-        CHECK_EQ(dl_tensor->dtype.bits, 64);
+        ICHECK_EQ(dl_tensor->dtype.code, 0u);
+        ICHECK_EQ(dl_tensor->dtype.bits, 64);
         int64_t* dims = reinterpret_cast<int64_t*>(dl_tensor->data);
         int64_t ndim = shape_tensor->shape[0];
         std::vector<int64_t> shape(dims, dims + ndim);
         // Reshape the input tensor
         auto out_tensor = tensor_arr.CreateView(shape, tensor_arr->dtype);
         WriteRegister(instr.dst, out_tensor);
+        pc_++;
+        goto main_loop;
+      }
+      case Opcode::DeviceCopy: {
+        auto tensor_src = ReadRegister(instr.src);
+        NDArray src_data = Downcast<NDArray>(tensor_src);
+        Device src_dev = src_data->device;
+        ICHECK_EQ(static_cast<Index>(src_dev.device_type), instr.src_device_type);
+
+        Device dst_dev;
+        dst_dev.device_type = static_cast<DLDeviceType>(instr.dst_device_type);
+        dst_dev.device_id = 0;
+
+        NDArray dst_data = src_data.CopyTo(dst_dev);
+        WriteRegister(instr.dst, dst_data);
         pc_++;
         goto main_loop;
       }
@@ -588,7 +626,7 @@ runtime::Module CreateVirtualMachine(const Executable* exec) {
 TVM_REGISTER_GLOBAL("runtime._VirtualMachine").set_body([](TVMArgs args, TVMRetValue* rv) {
   runtime::Module mod = args[0];
   const auto* exec = dynamic_cast<Executable*>(mod.operator->());
-  CHECK(exec) << "The virtual machine executable has not been defined yet.";
+  ICHECK(exec) << "The virtual machine executable has not been defined yet.";
   *rv = CreateVirtualMachine(exec);
 });
 

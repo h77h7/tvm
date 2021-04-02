@@ -22,6 +22,7 @@ import time
 import multiprocessing
 from tvm import rpc
 
+
 def rpc_proxy_check():
     """This is a simple test function for RPC Proxy
 
@@ -35,32 +36,30 @@ def rpc_proxy_check():
 
     try:
         from tvm.rpc import proxy
+
         web_port = 8888
-        prox = proxy.Proxy("localhost", web_port=web_port)
+        prox = proxy.Proxy("127.0.0.1", web_port=web_port)
+
         def check():
             if not tvm.runtime.enabled("rpc"):
                 return
-            @tvm.register_func("rpc.test2.addone")
-            def addone(x):
-                return x + 1
-            @tvm.register_func("rpc.test2.strcat")
-            def addone(name, x):
-                return "%s:%d" % (name, x)
+
             server = multiprocessing.Process(
-                target=proxy.websocket_proxy_server,
-                args=("ws://localhost:%d/ws" % web_port,"x1"))
+                target=proxy.websocket_proxy_server, args=("ws://localhost:%d/ws" % web_port, "x1")
+            )
             # Need to make sure that the connection start after proxy comes up
             time.sleep(0.1)
             server.deamon = True
             server.start()
             client = rpc.connect(prox.host, prox.port, key="x1")
-            f1 = client.get_function("rpc.test2.addone")
-            assert f1(10) == 11
-            f2 = client.get_function("rpc.test2.strcat")
-            assert f2("abc", 11) == "abc:11"
+            f1 = client.get_function("testing.echo")
+            assert f1(10) == 10
+            assert f1("xyz") == "xyz"
+
         check()
     except ImportError:
         print("Skipping because tornado is not avaliable...")
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

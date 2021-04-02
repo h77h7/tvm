@@ -22,18 +22,22 @@ from tvm import te
 from tvm.autotvm.task.space import SplitEntity, OtherOptionEntity
 
 from ..nn.pad import pad
-from ..nn.util import get_pad_tuple
+from ..nn.utils import get_pad_tuple
 from ..generic import conv2d as conv2d_generic
-from ..util import get_const_tuple, simplify
+from ..utils import get_const_tuple, simplify
 from .tensor_intrin import dot_16x1x16_uint8_int8_int32
-from .util import get_fp32_len
+from .utils import get_fp32_len
+
 
 def _fallback_schedule(cfg, wkl):
     simd_width = get_fp32_len()
-    HPAD, WPAD = wkl.hpad, wkl.wpad
-    HSTR, WSTR = wkl.hstride, wkl.wstride
-    out_height = (wkl.height + 2 * HPAD - wkl.hkernel) // HSTR + 1
-    out_width = (wkl.width + 2 * WPAD - wkl.wkernel) // WSTR + 1
+    pt, pl, pb, pr = wkl.padt, wkl.padl, wkl.padb, wkl.padr
+    HSTR, WSTR = wkl.stride_h, wkl.stride_w
+    dilated_kernel_h = (wkl.kernel_h - 1) * wkl.dilation_h + 1
+    dilated_kernel_w = (wkl.kernel_w - 1) * wkl.dilation_w + 1
+
+    out_height = (wkl.height + pt + pb - dilated_kernel_h) // HSTR + 1
+    out_width = (wkl.width + pl + pr - dilated_kernel_w) // WSTR + 1
 
     oc_bn = 1
     for bn in range(simd_width, 0, -1):
@@ -65,8 +69,7 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
     _, _, _, _, ic_bn = get_const_tuple(data_vec.shape)
 
     # schedule pad
-    if isinstance(s[data_vec].op, tvm.te.ComputeOp) \
-            and "pad" in data_vec.op.tag:
+    if isinstance(s[data_vec].op, tvm.te.ComputeOp) and "pad" in data_vec.op.tag:
         batch, ic_chunk, ih, iw, ic_block = s[data_vec].op.axis
         s[data_vec].vectorize(ic_block)
         parallel_axis = s[data_vec].fuse(batch, ic_chunk, ih)
@@ -74,8 +77,7 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
         data_vec = data_vec.op.input_tensors[0]
 
     oc_bn = cfg["tile_oc"].size[-1]
-    if isinstance(kernel_vec.op, tvm.te.ComputeOp) and \
-            kernel_vec.name == 'kernel_vec':
+    if isinstance(kernel_vec.op, tvm.te.ComputeOp) and kernel_vec.name == "kernel_vec":
         # data and kernel are not pre-computed, schedule layout transform here.
         # this should only be used by x86 conv2d_nchw, which is for
         # testing purpose.
@@ -91,7 +93,7 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
         s[kernel_vec].parallel(parallel_axis)
 
     C, O = conv_out, last
-    CC = s.cache_write(C, 'global')
+    CC = s.cache_write(C, "global")
 
     batch, oc_chunk, oh, ow, oc_block = s[C].op.axis
     oh_outer, oh_inner = s[C].split(oh, factor=oh_factor)
@@ -148,9 +150,16 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
 
 
 def _schedule_conv_NCHWc_int8(s, cfg, data_vec, kernel_vec, conv_out, last):
-    return conv2d_generic.schedule_conv_NCHWc_cpu_1x1_int8(s, cfg, data_vec, kernel_vec,
-                                                           conv_out, last, int32_lanes=16,
-                                                           intrin=dot_16x1x16_uint8_int8_int32())
+    return conv2d_generic.schedule_conv_NCHWc_cpu_1x1_int8(
+        s,
+        cfg,
+        data_vec,
+        kernel_vec,
+        conv_out,
+        last,
+        int32_lanes=16,
+        intrin=dot_16x1x16_uint8_int8_int32(),
+    )
 
 
 def _declaration_conv_nhwc_pack(cfg, Input, Filter, stride, padding, dilation, out_dtype):
@@ -174,14 +183,15 @@ def _declaration_conv_nhwc_pack(cfg, Input, Filter, stride, padding, dilation, o
     dilated_kernel_h = (kernel_h - 1) * dilation_h + 1
     dilated_kernel_w = (kernel_w - 1) * dilation_w + 1
     pad_top, pad_left, pad_down, pad_right = get_pad_tuple(
-        padding, (dilated_kernel_h, dilated_kernel_w))
+        padding, (dilated_kernel_h, dilated_kernel_w)
+    )
     out_channel = num_filter
     out_height = simplify((in_height - dilated_kernel_h + pad_top + pad_down) // stride_h + 1)
     out_width = simplify((in_width - dilated_kernel_w + pad_left + pad_right) // stride_w + 1)
     pad_before = [0, pad_top, pad_left, 0]
     pad_after = [0, pad_down, pad_right, 0]
     PaddedInput = pad(Input, pad_before, pad_after, name="PaddedInput")
-    # todo: padding filter to accomodate the intrinsic
+    # todo: padding filter to accommodate the intrinsic
 
     # packing the Filter to let memory access be consecutive for AVX512 intrinsic
     # Done in pre-compute stage
@@ -189,25 +199,29 @@ def _declaration_conv_nhwc_pack(cfg, Input, Filter, stride, padding, dilation, o
     idxm = tvm.tir.indexmod
 
     packw_shape = (kernel_h, kernel_w, idxd(num_filter, 16), 16 * idxd(channel, 4), 4)
-    PackW = te.compute(packw_shape,
-                       lambda a, b, c, d, e:
-                       Filter[a, b,
-                              c*16 + idxm(d, 16),
-                              idxd(d, 16) * 4 + e],
-                       name="packed_filter")
+    PackW = te.compute(
+        packw_shape,
+        lambda a, b, c, d, e: Filter[a, b, c * 16 + idxm(d, 16), idxd(d, 16) * 4 + e],
+        name="packed_filter",
+    )
 
-    rc = te.reduce_axis((0, in_channel), name='rc')
-    ry = te.reduce_axis((0, kernel_h), name='ry')
-    rx = te.reduce_axis((0, kernel_w), name='rx')
+    rc = te.reduce_axis((0, in_channel), name="rc")
+    ry = te.reduce_axis((0, kernel_h), name="ry")
+    rx = te.reduce_axis((0, kernel_w), name="rx")
     Output = te.compute(
         (batch, out_height, out_width, out_channel),
         lambda nn, yy, xx, ff: te.sum(
-            PaddedInput[nn, yy * stride_h + ry * dilation_h,
-                        xx * stride_w + rx * dilation_w, rc].astype(out_dtype) *
-            PackW[ry, rx, idxd(ff, 16),
-                  idxd(rc, 4) * 16 + idxm(ff, 16),
-                  idxm(rc, 4)].astype(out_dtype), axis=[ry, rx, rc]),
-        name="Conv2d_1x1_Output_int8", tag="conv2d_nhwc_pack_int8")
+            PaddedInput[
+                nn, yy * stride_h + ry * dilation_h, xx * stride_w + rx * dilation_w, rc
+            ].astype(out_dtype)
+            * PackW[ry, rx, idxd(ff, 16), idxd(rc, 4) * 16 + idxm(ff, 16), idxm(rc, 4)].astype(
+                out_dtype
+            ),
+            axis=[ry, rx, rc],
+        ),
+        name="Conv2d_1x1_Output_int8",
+        tag="conv2d_nhwc_pack_int8",
+    )
     return Output
 
 
@@ -218,7 +232,7 @@ def _schedule_conv_nhwc_pack_int8(s, cfg, data, conv_out, last):
     packing of weight to make the address access be friendly to int8
     intrinsic
     """
-    # FIXME - https://github.com/apache/incubator-tvm/issues/3598
+    # FIXME - https://github.com/apache/tvm/issues/3598
     # pylint: disable=unreachable
     return s
 

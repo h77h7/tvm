@@ -23,8 +23,9 @@
  */
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
+#include <tvm/topi/einsum.h>
 #include <tvm/topi/transform.h>
-#include <tvm/topi/util.h>
+#include <tvm/topi/utils.h>
 
 namespace tvm {
 namespace topi {
@@ -150,7 +151,7 @@ TVM_REGISTER_GLOBAL("topi.matmul").set_body([](TVMArgs args, TVMRetValue* rv) {
       *rv = matmul(args[0], args[1], args[2], args[3]);
       break;
     default:
-      CHECK(0) << "topi.matmul expects 2, 3 or 4 arguments";
+      ICHECK(0) << "topi.matmul expects 2, 3 or 4 arguments";
   }
 });
 
@@ -165,8 +166,16 @@ TVM_REGISTER_GLOBAL("topi.tensordot").set_body([](TVMArgs args, TVMRetValue* rv)
   }
 });
 
+TVM_REGISTER_GLOBAL("topi.einsum").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = einsum(args[0], args[1]);
+});
+
 TVM_REGISTER_GLOBAL("topi.strided_slice").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = strided_slice(args[0], args[1], args[2], args[3], args[4]);
+});
+
+TVM_REGISTER_GLOBAL("topi.dynamic_strided_slice").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = dynamic_strided_slice(args[0], args[1], args[2], args[3]);
 });
 
 TVM_REGISTER_GLOBAL("topi.one_hot").set_body([](TVMArgs args, TVMRetValue* rv) {
@@ -177,7 +186,15 @@ TVM_REGISTER_GLOBAL("topi.one_hot").set_body([](TVMArgs args, TVMRetValue* rv) {
 });
 
 TVM_REGISTER_GLOBAL("topi.matrix_set_diag").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = matrix_set_diag(args[0], args[1]);
+  int k1 = args[2];
+  int k2 = args[3];
+  bool super_diag_right_align = args[4];
+  bool sub_diag_right_align = args[5];
+  *rv = matrix_set_diag(args[0], args[1], k1, k2, super_diag_right_align, sub_diag_right_align);
+});
+
+TVM_REGISTER_GLOBAL("topi.adv_index").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = adv_index(args[0], args[1]);
 });
 
 }  // namespace topi

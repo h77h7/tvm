@@ -20,15 +20,18 @@ import tvm
 from tvm.autotvm.task.space import SplitEntity, OtherOptionEntity
 
 from ..generic import conv2d as conv2d_generic
-from ..util import get_const_tuple
+from ..utils import get_const_tuple
 from .tensor_intrin import dot_16x1x16_uint8_int8_int32
-from .util import get_fp32_len
+from .utils import get_fp32_len
+
 
 def _fallback_schedule(cfg, wkl):
     simd_width = get_fp32_len()
-    HPAD, WPAD = wkl.hpad, wkl.wpad
-    HSTR, WSTR = wkl.hstride, wkl.wstride
-    out_width = (wkl.width + 2 * WPAD - wkl.wkernel) // WSTR + 1
+    pt, pl, pb, pr = wkl.padt, wkl.padl, wkl.padb, wkl.padr
+    HSTR, WSTR = wkl.stride_h, wkl.stride_w
+    dilated_kernel_w = (wkl.kernel_w - 1) * wkl.dilation_w + 1
+
+    out_width = (wkl.width + pl + pr - dilated_kernel_w) // WSTR + 1
 
     oc_bn = 1
     for bn in range(simd_width, 0, -1):
@@ -55,9 +58,9 @@ def _fallback_schedule(cfg, wkl):
 
 
 def _fallback_schedule_int8(cfg, wkl):
-    HPAD, WPAD = wkl.hpad, wkl.wpad
-    HSTR, WSTR = wkl.hstride, wkl.wstride
-    out_width = (wkl.width + 2 * WPAD - wkl.wkernel) // WSTR + 1
+    pt, pl, pb, pr = wkl.padt, wkl.padl, wkl.padb, wkl.padr
+    HSTR, WSTR = wkl.stride_h, wkl.stride_w
+    out_width = (wkl.width + pl + pr - wkl.kernel_w) // WSTR + 1
 
     oc_bn = 16
     assert wkl.out_filter % oc_bn == 0
@@ -87,8 +90,7 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
     _, _, _, _, ic_bn = get_const_tuple(data_vec.shape)
 
     # schedule pad
-    if isinstance(s[data_vec].op, tvm.te.ComputeOp) \
-            and "pad" in data_vec.op.tag:
+    if isinstance(s[data_vec].op, tvm.te.ComputeOp) and "pad" in data_vec.op.tag:
         batch, ic_chunk, ih, iw, ic_block = s[data_vec].op.axis
         s[data_vec].vectorize(ic_block)
         parallel_axis = s[data_vec].fuse(batch, ic_chunk, ih)
@@ -96,8 +98,7 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
         data_vec = data_vec.op.input_tensors[0]
 
     oc_bn = cfg["tile_oc"].size[-1]
-    if isinstance(kernel_vec.op, tvm.te.ComputeOp) and \
-            kernel_vec.name == 'kernel_vec':
+    if isinstance(kernel_vec.op, tvm.te.ComputeOp) and kernel_vec.name == "kernel_vec":
         # data and kernel are not pre-computed, schedule layout transform here.
         # this should only be used by x86 conv2d_nchw, which is for
         # testing purpose.
@@ -112,10 +113,9 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
         parallel_axis = s[kernel_vec].fuse(oc_chunk, oh)
         s[kernel_vec].parallel(parallel_axis)
 
-
     # schedule 5-D NCHW[x]c conv
     C, O = conv_out, last
-    CC = s.cache_write(C, 'global')
+    CC = s.cache_write(C, "global")
 
     batch, oc_chunk, oh, ow, oc_block = s[C].op.axis
     ow_chunk, ow_block = s[C].split(ow, factor=reg_n)
@@ -167,6 +167,13 @@ def _schedule_conv_NCHWc(s, cfg, data_vec, kernel_vec, conv_out, last):
 
 
 def _schedule_conv_NCHWc_int8(s, cfg, data_vec, kernel_vec, conv_out, last):
-    return conv2d_generic.schedule_conv_NCHWc_cpu_common_int8(s, cfg, data_vec, kernel_vec,
-                                                              conv_out, last, int32_lanes=16,
-                                                              intrin=dot_16x1x16_uint8_int8_int32())
+    return conv2d_generic.schedule_conv_NCHWc_cpu_common_int8(
+        s,
+        cfg,
+        data_vec,
+        kernel_vec,
+        conv_out,
+        last,
+        int32_lanes=16,
+        intrin=dot_16x1x16_uint8_int8_int32(),
+    )

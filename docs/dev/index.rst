@@ -49,7 +49,7 @@ In this guide, we will study an example compilation flow in the compiler. The fi
 - Runtime Execution: the user loads back a `runtime.Module` and runs the compiled functions in the supported runtime environment.
 
 
-.. figure:: https://raw.githubusercontent.com/tvmai/web-data/master/images/design/tvm_dyn_workflow.svg
+.. figure:: https://raw.githubusercontent.com/tlc-pack/web-data/main/images/design/tvm_dyn_workflow.svg
    :align: center
    :width: 85%
 
@@ -94,7 +94,7 @@ This process helps us to divide the original problem into two sub-problems:
 We use the low-level tir phase to compile and optimize each sub-functions. For specific targets, we may also directly go to the target translation
 phase and use external code generators.
 
-There are a few different ways(in relay/backend) to handle the calls into the overall execution problem. For simple models with known shapes and no control flow, we can lower to a graph runtime that stores the execution structure in a graph. We also support a virtual machine backend for dynamic executions. Finally, we plan to support ahead of time compilation that compiles the high-level execution structure into the executable and generated primitive functions. All of these execution modes are encapsulated by a unified **runtime.Module** interface, which we will discuss in the latter part of the guide.
+There are a few different ways(in relay/backend) to handle the calls into the overall execution problem. For simple models with known shapes and no control flow, we can lower to a graph executor that stores the execution structure in a graph. We also support a virtual machine backend for dynamic executions. Finally, we plan to support ahead of time compilation that compiles the high-level execution structure into the executable and generated primitive functions. All of these execution modes are encapsulated by a unified **runtime.Module** interface, which we will discuss in the latter part of the guide.
 
 **tir/transform** contains transformation passes for TIR level functions. Many tir passes serve the purpose of lowering. For example, there are passes to flatten multi-dimensional access to one-dimensional pointer access, to expand the intrinsics into target-specific ones, and to decorate the function entry to meet the runtime calling convention. Of course, there are also optimizations passes, such as access index simplification and dead code elimination.
 
@@ -144,7 +144,7 @@ The main goal of TVM's runtime is to provide a minimal API for loading and execu
     import tvm
     # Example runtime execution program in python, with type annotated
     mod: tvm.runtime.Module = tvm.runtime.load_module("compiled_artifact.so")
-    arr: tvm.runtime.NDArray = tvm.nd.array([1, 2, 3], ctx=tvm.gpu(0))
+    arr: tvm.runtime.NDArray = tvm.nd.array([1, 2, 3], device=tvm.gpu(0))
     fun: tvm.runtime.PackedFunc = mod["addone"]
     fun(a)
     print(a.asnumpy())
@@ -201,7 +201,7 @@ except that the data structure of interest changes from the numpy.ndarray to tvm
 Logical Architecture Components
 -------------------------------
 
-.. figure:: https://raw.githubusercontent.com/tvmai/web-data/master/images/design/tvm_static_overview.svg
+.. figure:: https://raw.githubusercontent.com/tlc-pack/web-data/main/images/design/tvm_static_overview.svg
    :align: center
    :width: 85%
 
@@ -396,3 +396,11 @@ Security
    :maxdepth: 1
 
    security
+
+
+microTVM
+--------
+.. toctree::
+   :maxdepth: 1
+
+   microtvm_design

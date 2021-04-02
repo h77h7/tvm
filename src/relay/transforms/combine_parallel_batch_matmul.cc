@@ -42,7 +42,7 @@
 
 #include "./combine_parallel_op.h"
 #include "./expr_subst.h"
-#include "pattern_util.h"
+#include "pattern_utils.h"
 
 namespace tvm {
 namespace relay {
@@ -70,16 +70,15 @@ class ParallelBatchMatmulCombiner : public ParallelOpCombiner {
   }
 
   Call MakeCombinedOp(const Group& branches) {
-    const Op& batch_matmul = Op::Get("nn.batch_matmul");
     Expr data = branches[0][0]->args[0];
 
     Array<Expr> weights;
     for (const auto& branch : branches) {
-      auto batch_matmul = branch[0];
-      weights.push_back(batch_matmul->args[1]);
+      auto call = branch[0];
+      weights.push_back(call->args[1]);
     }
     Expr new_weight = MakeConcatenate(Tuple(weights), 1);
-    return Call(batch_matmul, {data, new_weight}, {}, {});
+    return Downcast<Call>(MakeBatchMatmul(data, new_weight));
   }
 
   bool IsArgCompatible(const CallNode* a, const CallNode* b, size_t index) { return true; }
@@ -116,8 +115,8 @@ class ParallelBatchMatmulCombiner : public ParallelOpCombiner {
       auto feature_dim = batch_matmul->args[1]->type_as<TensorTypeNode>()->shape[1];
       auto fpp = tir::as_const_int(feature_dim);
       int64_t features = *fpp;
-      std::vector<int64_t> begin;
-      std::vector<int64_t> end;
+      Array<Integer> begin;
+      Array<Integer> end;
       for (size_t i = 0; i < 2; i++) {
         begin.push_back(0);
         end.push_back(-1);
@@ -125,12 +124,8 @@ class ParallelBatchMatmulCombiner : public ParallelOpCombiner {
       begin.push_back(index);
       index += features;
       end.push_back(features);
-      std::vector<int64_t> strides(begin.size(), 1);
-      std::vector<int64_t> ndarray_shape = {static_cast<int64_t>(begin.size())};
-      Constant begin_const = MakeConstantTensor(DataType::Int(64), ndarray_shape, begin);
-      Constant end_const = MakeConstantTensor(DataType::Int(64), ndarray_shape, end);
-      Constant strides_const = MakeConstantTensor(DataType::Int(64), ndarray_shape, strides);
-      auto slice = MakeStridedSlice(data, begin_const, end_const, strides_const, "size");
+      Array<Integer> strides(begin.size(), 1);
+      auto slice = MakeStridedSlice(data, begin, end, strides, "size");
       subst_map->insert({GetRef<Expr>(branch[depth]), slice});
     }
   }

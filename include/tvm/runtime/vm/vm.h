@@ -83,13 +83,17 @@ struct VMFunction {
   std::vector<Instruction> instructions;
   /*! \brief The size of the frame for this function */
   Index register_file_size;
+  /*! \brief The device type of each parameter for this function. */
+  std::vector<Index> params_device_type;
 
   VMFunction(const std::string& name, std::vector<std::string> params,
-             const std::vector<Instruction>& instructions, Index register_file_size)
+             const std::vector<Instruction>& instructions, Index register_file_size,
+             const std::vector<Index> params_device_type = {})
       : name(name),
         params(params),
         instructions(instructions),
-        register_file_size(register_file_size) {}
+        register_file_size(register_file_size),
+        params_device_type(params_device_type) {}
 
   VMFunction() {}
 
@@ -235,17 +239,17 @@ class VirtualMachine : public runtime::ModuleNode {
                             Index output_size, const std::vector<ObjectRef>& args);
 
   /*!
-   * \brief Initialize the virtual machine for a set of contexts.
-   * \param contexts The set of TVM contexts.
-   * \param alloc_types The allocator types for each context.
+   * \brief Initialize the virtual machine for a set of devices.
+   * \param devices The set of TVM devices.
+   * \param alloc_types The allocator types for each device.
    */
-  void Init(const std::vector<TVMContext>& contexts, const std::vector<AllocatorType>& alloc_types);
+  void Init(const std::vector<Device>& devices, const std::vector<AllocatorType>& alloc_types);
 
   /*! \brief Run VM dispatch loop. */
   void RunLoop();
 
-  /*! \brief Get device context for params. */
-  TVMContext GetParamsContext() const;
+  /*! \brief Get device from the device list based on a given device type. */
+  Device GetDevice(Index device_type) const;
 
   /*!
    * \brief Invoke a global setting up the VM state to execute.
@@ -271,10 +275,10 @@ class VirtualMachine : public runtime::ModuleNode {
   const Executable* exec_;
   /*! \brief The function name to inputs mapping. */
   std::unordered_map<std::string, std::vector<ObjectRef>> inputs_;
-  /*! \brief The set of TVM contexts the VM is currently executing on. */
-  std::vector<TVMContext> ctxs_;
-  /*! \brief The mapping from TVM context to memory allocator. */
-  std::unordered_map<TVMContext, Allocator*> allocators_;
+  /*! \brief The set of TVM devices the VM is currently executing on. */
+  std::vector<Device> devices_;
+  /*! \brief The cached memory allocators. */
+  std::vector<Allocator*> allocators_;
   /*!
    * \brief The constant pool for runtime. It caches the device dependent
    * object to avoid rellocation of constants during inference.

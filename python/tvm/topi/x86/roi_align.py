@@ -17,15 +17,17 @@
 # pylint: disable=invalid-name, no-member, too-many-locals, too-many-arguments, undefined-variable, too-many-nested-blocks, too-many-branches, too-many-statements
 """Non-maximum suppression operator for intel cpu"""
 import math
-import tvm
 
+import tvm
 from tvm.te import hybrid
 from ..tensor import full
-from ..util import get_const_tuple
+from ..utils import get_const_tuple
 
 
 @hybrid.script
-def roi_align_nchw_ir(data, rois, w_pc, pos_pc, pooled_size, spatial_scale, sample_ratio):
+def roi_align_nchw_ir(
+    data, rois, num_rois, w_pc, pos_pc, pooled_size, spatial_scale, sample_ratio, mode
+):
     """Hybrid routing fo ROI align operator in NCHW layout.
 
     Parameters
@@ -36,6 +38,10 @@ def roi_align_nchw_ir(data, rois, w_pc, pos_pc, pooled_size, spatial_scale, samp
     rois : tvm.te.Tensor or numpy NDArray
         2-D with shape [num_roi, 5]. The last dimension should be in format of
         [batch_index, w_start, h_start, w_end, h_end]
+
+    num_rois : tvm.tir.IntImm or tvm.tir.Var
+        Number of roi. We need to pass it in since hybrid script doesn't support
+        binding variable to symbolic dim.
 
     w_pc : tvm.te.Tensor or numpy NDArray
         3-D weight pre-calculation buffer
@@ -53,6 +59,10 @@ def roi_align_nchw_ir(data, rois, w_pc, pos_pc, pooled_size, spatial_scale, samp
     sample_ratio : tvm.tir.const
         Sampling ratio of ROI align, using adaptive size by default.
 
+    mode : tvm.tir.const
+        Mode of RoiAlign. A value of 0 corrensponds to b'avg', while a value of 1 corresponds to
+        b'max'.
+
     Returns
     -------
     output : tvm.te.Tensor or numpy NDArray
@@ -61,7 +71,6 @@ def roi_align_nchw_ir(data, rois, w_pc, pos_pc, pooled_size, spatial_scale, samp
     channels = data.shape[1]
     height = data.shape[2]
     width = data.shape[3]
-    num_rois = rois.shape[0]
     pooled_size_h = pooled_size[0]
     pooled_size_w = pooled_size[1]
     output = output_tensor((num_rois, channels, pooled_size_h, pooled_size_w), data.dtype)
@@ -157,34 +166,51 @@ def roi_align_nchw_ir(data, rois, w_pc, pos_pc, pooled_size, spatial_scale, samp
             pre_calc_index = 0
             for ph in range(pooled_size_h):
                 for pw in range(pooled_size_w):
-                    output_val = 0.0
+                    output_val = 0.0  # Avg mode
+                    if mode == 1:  # Max mode
+                        output_val = ninf("float32")
                     for iy in range(roi_bin_grid_h):
                         for ix in range(roi_bin_grid_w):
-                            output_val += w_pc[n, pre_calc_index, 0] \
-                                * data[roi_batch_index, c,
-                                       pos_pc[n, pre_calc_index, 2],
-                                       pos_pc[n, pre_calc_index, 0]] \
-                                + w_pc[n, pre_calc_index, 1] \
-                                * data[roi_batch_index, c,
-                                       pos_pc[n, pre_calc_index, 2],
-                                       pos_pc[n, pre_calc_index, 1]] \
-                                + w_pc[n, pre_calc_index, 2] \
-                                * data[roi_batch_index, c,
-                                       pos_pc[n, pre_calc_index, 3],
-                                       pos_pc[n, pre_calc_index, 0]] \
-                                + w_pc[n, pre_calc_index, 3] \
-                                * data[roi_batch_index, c,
-                                       pos_pc[n, pre_calc_index, 3],
-                                       pos_pc[n, pre_calc_index, 1]]
+                            bilinear_val = (
+                                w_pc[n, pre_calc_index, 0]
+                                * data[
+                                    roi_batch_index,
+                                    c,
+                                    pos_pc[n, pre_calc_index, 2],
+                                    pos_pc[n, pre_calc_index, 0],
+                                ]
+                                + w_pc[n, pre_calc_index, 1]
+                                * data[
+                                    roi_batch_index,
+                                    c,
+                                    pos_pc[n, pre_calc_index, 2],
+                                    pos_pc[n, pre_calc_index, 1],
+                                ]
+                                + w_pc[n, pre_calc_index, 2]
+                                * data[
+                                    roi_batch_index,
+                                    c,
+                                    pos_pc[n, pre_calc_index, 3],
+                                    pos_pc[n, pre_calc_index, 0],
+                                ]
+                                + w_pc[n, pre_calc_index, 3]
+                                * data[
+                                    roi_batch_index,
+                                    c,
+                                    pos_pc[n, pre_calc_index, 3],
+                                    pos_pc[n, pre_calc_index, 1],
+                                ]
+                            )
                             pre_calc_index += 1
-
-                    output_val /= count
-                    output[n, c, ph, pw] = output_val
-
+                            if mode == 0:  # Avg mode
+                                output_val += bilinear_val / count
+                            if mode == 1:  # Max mode
+                                output_val = max(output_val, bilinear_val)
+                        output[n, c, ph, pw] = output_val
     return output
 
 
-def roi_align_nchw(data, rois, pooled_size, spatial_scale, sample_ratio=-1):
+def roi_align_nchw(data, rois, pooled_size, spatial_scale, mode, sample_ratio=-1):
     """ROI align operator in NCHW layout.
 
     Parameters
@@ -202,6 +228,9 @@ def roi_align_nchw(data, rois, pooled_size, spatial_scale, sample_ratio=-1):
     spatial_scale : float
         Ratio of input feature map height (or w) to raw image height (or w). Equals the reciprocal
         of total stride in convolutional layers, which should be in range (0.0, 1.0]
+
+    mode : str
+        Mode of RoiAlign. Should be b'max' or b'avg'.
 
     sample_ratio : int
         Optional sampling ratio of ROI align, using adaptive size by default.
@@ -221,13 +250,33 @@ def roi_align_nchw(data, rois, pooled_size, spatial_scale, sample_ratio=-1):
         _, _, height, width = get_const_tuple(data.shape)
         max_roi_bin_grid_h = math.ceil(height / pooled_size[0])
         max_roi_bin_grid_w = math.ceil(width / pooled_size[1])
-    max_pc_shape = (rois.shape[0], max_roi_bin_grid_h * max_roi_bin_grid_w
-                    * pooled_size[0] * pooled_size[1], 4)
+    num_rois = rois.shape[0]
+    max_pc_shape = (
+        rois.shape[0],
+        max_roi_bin_grid_h * max_roi_bin_grid_w * pooled_size[0] * pooled_size[1],
+        4,
+    )
     w_pc_buffer = full(max_pc_shape, data.dtype, 0)
     pos_pc_buffer = full(max_pc_shape, "int32", 0)
 
     pooled_size = tvm.runtime.convert(pooled_size)
     spatial_scale = tvm.tir.const(spatial_scale, "float32")
     sample_ratio = tvm.tir.const(sample_ratio, "int32")
-    return roi_align_nchw_ir(data, rois, w_pc_buffer, pos_pc_buffer,
-                             pooled_size, spatial_scale, sample_ratio)
+    if mode in (b"avg", 0):
+        mode = tvm.tir.const(0, dtype="float32")
+    elif mode in (b"max", 1):
+        mode = tvm.tir.const(1, dtype="float32")
+    else:
+        raise ValueError(mode, "Value %s passed in for mode not supported", mode)
+
+    return roi_align_nchw_ir(
+        data,
+        rois,
+        num_rois,
+        w_pc_buffer,
+        pos_pc_buffer,
+        pooled_size,
+        spatial_scale,
+        sample_ratio,
+        mode,
+    )

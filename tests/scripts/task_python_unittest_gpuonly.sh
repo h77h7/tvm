@@ -16,4 +16,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+export TVM_TEST_TARGETS="cuda;opencl;metal;rocm;vulkan;nvptx;opencl -device=mali,aocl_sw_emu"
+export PYTEST_ADDOPTS="-m gpu $PYTEST_ADDOPTS"
+export TVM_UNITTEST_TESTSUITE_NAME=python-unittest-gpu
+
 ./tests/scripts/task_python_unittest.sh

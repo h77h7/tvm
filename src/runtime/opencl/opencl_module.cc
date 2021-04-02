@@ -50,7 +50,7 @@ class OpenCLWrappedFunc {
   }
   // invoke the function with void arguments
   void operator()(TVMArgs args, TVMRetValue* rv, void** void_args) const {
-    CHECK(w_->context != nullptr) << "No OpenCL device";
+    ICHECK(w_->context != nullptr) << "No OpenCL device";
     cl::OpenCLThreadEntry* t = w_->GetThreadEntry();
     // get the kernel from thread local kernel table.
     if (entry_.kernel_id >= t->kernel_table.size()) {
@@ -65,7 +65,7 @@ class OpenCLWrappedFunc {
     for (cl_uint i = 0; i < arg_size_.size(); ++i) {
       OPENCL_CALL(clSetKernelArg(kernel, i, arg_size_[i], void_args[i]));
     }
-    cl_command_queue queue = w_->GetQueue(t->context);
+    cl_command_queue queue = w_->GetQueue(t->device);
     ThreadWorkLoad wl = thread_axis_cfg_.Extract(args);
     cl_uint work_dim = static_cast<cl_uint>(thread_axis_cfg_.work_dim());
     for (cl_uint i = 0; i < work_dim; ++i) {
@@ -116,8 +116,8 @@ cl::OpenCLWorkspace* OpenCLModuleNode::GetGlobalWorkspace() {
 
 PackedFunc OpenCLModuleNode::GetFunction(const std::string& name,
                                          const ObjectPtr<Object>& sptr_to_self) {
-  CHECK_EQ(sptr_to_self.get(), this);
-  CHECK_NE(name, symbol::tvm_module_main) << "Device function do not have main";
+  ICHECK_EQ(sptr_to_self.get(), this);
+  ICHECK_NE(name, symbol::tvm_module_main) << "Device function do not have main";
   auto it = fmap_.find(name);
   if (it == fmap_.end()) return PackedFunc();
   const FunctionInfo& info = it->second;
@@ -125,13 +125,13 @@ PackedFunc OpenCLModuleNode::GetFunction(const std::string& name,
   std::vector<size_t> arg_size(info.arg_types.size());
   for (size_t i = 0; i < info.arg_types.size(); ++i) {
     DLDataType t = info.arg_types[i];
-    CHECK_EQ(t.lanes, 1U);
+    ICHECK_EQ(t.lanes, 1U);
     if (t.code == kTVMOpaqueHandle) {
       // specially store pointer type size in OpenCL driver
       arg_size[i] = sizeof(void*);
     } else {
       uint32_t bits = t.bits;
-      CHECK_EQ(bits % 8, 0U);
+      ICHECK_EQ(bits % 8, 0U);
       arg_size[i] = bits / 8;
     }
   }
@@ -142,7 +142,7 @@ PackedFunc OpenCLModuleNode::GetFunction(const std::string& name,
 
 void OpenCLModuleNode::SaveToFile(const std::string& file_name, const std::string& format) {
   std::string fmt = GetFileFormat(file_name, format);
-  CHECK_EQ(fmt, fmt_) << "Can only save to format=" << fmt_;
+  ICHECK_EQ(fmt, fmt_) << "Can only save to format=" << fmt_;
   std::string meta_file = GetMetaFilePath(file_name);
   SaveMetaDataToFile(meta_file, fmap_);
   SaveBinaryToFile(file_name, data_);
@@ -186,7 +186,7 @@ void OpenCLModuleNode::Init() {
 cl_kernel OpenCLModuleNode::InstallKernel(cl::OpenCLWorkspace* w, cl::OpenCLThreadEntry* t,
                                           const std::string& func_name, const KTRefEntry& e) {
   std::lock_guard<std::mutex> lock(build_lock_);
-  int device_id = t->context.device_id;
+  int device_id = t->device.device_id;
   if (!device_built_flag_[device_id]) {
     // create program
     if (fmt_ == "cl") {

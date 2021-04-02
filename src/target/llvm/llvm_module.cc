@@ -30,9 +30,11 @@
 
 #include <mutex>
 
-#include "../../runtime/file_util.h"
+#include "../../runtime/file_utils.h"
 #include "../../runtime/library_module.h"
+#include "../func_registry_generator.h"
 #include "codegen_blob.h"
+#include "codegen_cpu.h"
 #include "codegen_llvm.h"
 #include "llvm_common.h"
 
@@ -59,6 +61,13 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     if (name == "__tvm_is_system_module") {
       bool flag = (mptr_->getFunction("__tvm_module_startup") != nullptr);
       return PackedFunc([flag](TVMArgs args, TVMRetValue* rv) { *rv = flag; });
+    } else if (name == "get_func_names") {
+      return PackedFunc(
+          [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { *rv = this->function_names_; });
+    } else if (name == "get_symbol") {
+      return PackedFunc(nullptr);
+    } else if (name == "get_const_vars") {
+      return PackedFunc(nullptr);
     } else if (name == "_get_target_triple") {
       std::string target_triple = tm_->getTargetTriple().str();
       // getTargetTriple() doesn't include other flags besides the triple. Add back flags which are
@@ -76,7 +85,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     if (name == runtime::symbol::tvm_module_main) {
       const char* entry_name =
           reinterpret_cast<const char*>(GetGlobalAddr(runtime::symbol::tvm_module_main));
-      CHECK(entry_name != nullptr)
+      ICHECK(entry_name != nullptr)
           << "Symbol " << runtime::symbol::tvm_module_main << " is not presented";
       faddr = reinterpret_cast<TVMBackendPackedCFunc>(GetFunctionAddr(entry_name));
     } else {
@@ -90,7 +99,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     std::string fmt = runtime::GetFileFormat(file_name, format);
     std::error_code ecode;
     llvm::raw_fd_ostream dest(file_name, ecode, llvm::sys::fs::F_None);
-    CHECK_EQ(ecode.value(), 0) << "Cannot open file: " << file_name << " " << ecode.message();
+    ICHECK_EQ(ecode.value(), 0) << "Cannot open file: " << file_name << " " << ecode.message();
     if (fmt == "o" || fmt == "obj") {
 #if TVM_LLVM_VERSION <= 60
       std::unique_ptr<llvm::Module> m = llvm::CloneModule(mptr_);
@@ -98,16 +107,16 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       std::unique_ptr<llvm::Module> m = llvm::CloneModule(*mptr_);
 #endif
       llvm::legacy::PassManager pass;
-      CHECK(tm_);
+      ICHECK(tm_);
 #if TVM_LLVM_VERSION <= 60
-      CHECK(tm_->addPassesToEmitFile(pass, dest, llvm::TargetMachine::CGFT_ObjectFile) == 0)
+      ICHECK(tm_->addPassesToEmitFile(pass, dest, llvm::TargetMachine::CGFT_ObjectFile) == 0)
           << "Cannot emit target CGFT_ObjectFile";
 #elif TVM_LLVM_VERSION <= 90
-      CHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::TargetMachine::CGFT_ObjectFile) ==
-            0)
+      ICHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::TargetMachine::CGFT_ObjectFile) ==
+             0)
           << "Cannot emit target CGFT_ObjectFile";
 #else
-      CHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::CGFT_ObjectFile) == 0)
+      ICHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::CGFT_ObjectFile) == 0)
           << "Cannot emit target CGFT_ObjectFile";
 #endif
       pass.run(*m);
@@ -118,16 +127,16 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       std::unique_ptr<llvm::Module> m = llvm::CloneModule(*mptr_);
 #endif
       llvm::legacy::PassManager pass;
-      CHECK(tm_);
+      ICHECK(tm_);
 #if TVM_LLVM_VERSION <= 60
-      CHECK(tm_->addPassesToEmitFile(pass, dest, llvm::TargetMachine::CGFT_AssemblyFile) == 0)
+      ICHECK(tm_->addPassesToEmitFile(pass, dest, llvm::TargetMachine::CGFT_AssemblyFile) == 0)
           << "Cannot emit target CGFT_AssemblyFile";
 #elif TVM_LLVM_VERSION <= 90
-      CHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::TargetMachine::CGFT_AssemblyFile) ==
-            0)
+      ICHECK(tm_->addPassesToEmitFile(pass, dest, nullptr,
+                                      llvm::TargetMachine::CGFT_AssemblyFile) == 0)
           << "Cannot emit target CGFT_AssemblyFile";
 #else
-      CHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::CGFT_AssemblyFile) == 0)
+      ICHECK(tm_->addPassesToEmitFile(pass, dest, nullptr, llvm::CGFT_AssemblyFile) == 0)
           << "Cannot emit target CGFT_AssemblyFile";
 #endif
       pass.run(*m);
@@ -163,16 +172,16 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       std::unique_ptr<llvm::Module> m = llvm::CloneModule(*mptr_);
 #endif
       llvm::legacy::PassManager pass;
-      CHECK(tm_);
+      ICHECK(tm_);
 #if TVM_LLVM_VERSION <= 60
-      CHECK(tm_->addPassesToEmitFile(pass, rso, llvm::TargetMachine::CGFT_AssemblyFile) == 0)
+      ICHECK(tm_->addPassesToEmitFile(pass, rso, llvm::TargetMachine::CGFT_AssemblyFile) == 0)
           << "Cannot emit target CGFT_AssemblyFile";
 #elif TVM_LLVM_VERSION <= 90
-      CHECK(tm_->addPassesToEmitFile(pass, rso, nullptr, llvm::TargetMachine::CGFT_AssemblyFile) ==
-            0)
+      ICHECK(tm_->addPassesToEmitFile(pass, rso, nullptr, llvm::TargetMachine::CGFT_AssemblyFile) ==
+             0)
           << "Cannot emit target CGFT_AssemblyFile";
 #else
-      CHECK(tm_->addPassesToEmitFile(pass, rso, nullptr, llvm::CGFT_AssemblyFile) == 0)
+      ICHECK(tm_->addPassesToEmitFile(pass, rso, nullptr, llvm::CGFT_AssemblyFile) == 0)
           << "Cannot emit target CGFT_AssemblyFile";
 #endif
       pass.run(*m);
@@ -180,7 +189,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     } else if (fmt == "" || fmt == "ll") {
       std::string type_str;
       llvm::raw_string_ostream rso(type_str);
-      CHECK(mptr_ != nullptr);
+      ICHECK(mptr_ != nullptr);
       mptr_->print(rso, nullptr);
       return rso.str();
     } else {
@@ -189,10 +198,9 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     return "";
   }
 
-  void Init(const IRModule& mod, std::string target_str) {
+  void Init(const IRModule& mod, const Target& target) {
     InitializeLLVM();
-    tm_ = GetLLVMTargetMachine(target_str);
-    auto target = Target::Create(target_str);
+    tm_ = GetLLVMTargetMachine(target);
     bool system_lib = target->GetAttr<Bool>("system-lib").value_or(Bool(false));
     bool target_c_runtime = (target->GetAttr<String>("runtime").value_or("") == kTvmRuntimeCrt);
     ctx_ = std::make_shared<llvm::LLVMContext>();
@@ -200,17 +208,33 @@ class LLVMModuleNode final : public runtime::ModuleNode {
 
     std::vector<PrimFunc> funcs;
     std::string entry_func;
+    Map<String, LinkedParam> linked_params;
+    bool found_linked_params = false;
+    bool could_have_linked_params = target->GetAttr<Bool>("link-params").value_or(Bool(false));
     for (auto kv : mod->functions) {
-      CHECK(kv.second->IsInstance<PrimFuncNode>()) << "Can only lower IR Module with PrimFuncs";
+      if (could_have_linked_params &&
+          kv.first->name_hint == ::tvm::runtime::symbol::tvm_lookup_linked_param) {
+        Map<String, ObjectRef> attrs_dict =
+            Downcast<Map<String, ObjectRef>>(kv.second->attrs->dict);
+        CHECK(attrs_dict.find(::tvm::tir::attr::kLinkedParams) != attrs_dict.end())
+            << "no " << ::tvm::tir::attr::kLinkedParams << " attribute found!";
+        linked_params =
+            Downcast<Map<String, LinkedParam>>(attrs_dict[::tvm::tir::attr::kLinkedParams]);
+        found_linked_params = true;
+        continue;
+      }
+      ICHECK(kv.second->IsInstance<PrimFuncNode>())
+          << "Can only lower IR Module with PrimFuncs, but got " << kv.second->GetTypeKey();
       auto f = Downcast<PrimFunc>(kv.second);
+      auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
+      ICHECK(global_symbol.defined());
+      function_names_.push_back(global_symbol.value());
       if (f->HasNonzeroAttr(tir::attr::kIsEntryFunc)) {
-        auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
-        CHECK(global_symbol.defined());
         entry_func = global_symbol.value();
       }
       funcs.push_back(f);
     }
-    CHECK_NE(funcs.size(), 0U);
+    ICHECK(funcs.size() > 0 || (could_have_linked_params && found_linked_params));
     // TODO(tqchen): remove the entry function behavior as it does not
     // makes sense when we start to use multiple modules.
     cg->Init("TVMMod", tm_.get(), ctx_.get(), system_lib, system_lib, target_c_runtime);
@@ -223,9 +247,12 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       cg->AddMainFunction(entry_func);
     }
 
+    if (found_linked_params) {
+      cg->LinkParameters(linked_params);
+    }
     module_ = cg->Finish();
     module_->addModuleFlag(llvm::Module::Warning, "tvm_target",
-                           llvm::MDString::get(*ctx_, target_str));
+                           llvm::MDString::get(*ctx_, LLVMTargetToString(target)));
     module_->addModuleFlag(llvm::Module::Override, "Debug Info Version",
                            llvm::DEBUG_METADATA_VERSION);
 
@@ -238,7 +265,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     LOG_IF(FATAL, llvm::verifyModule(*module_, &verify_errors))
         << "LLVM module verification failed with the following errors: \n"
         << verify_errors.str();
-    target_ = target_str;
+    target_ = target;
     mptr_ = module_.get();
   }
 
@@ -251,19 +278,22 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       std::string msg = std::string(err.getMessage());
       LOG(FATAL) << "Fail to load module: " << msg;
     }
-    std::string target_;
-    llvm::Metadata* mtarget = module_->getModuleFlag("tvm_target");
-    if (mtarget != nullptr) {
-      llvm::MDString* pstr = llvm::dyn_cast<llvm::MDString>(mtarget);
-      CHECK(pstr != nullptr);
-      target_ = pstr->getString().str();
+    std::string target_metadata;
+    llvm::Metadata* tvm_target = module_->getModuleFlag("tvm_target");
+    if (tvm_target != nullptr) {
+      llvm::MDString* pstr = llvm::dyn_cast<llvm::MDString>(tvm_target);
+      ICHECK(pstr != nullptr);
+      target_metadata = pstr->getString().str();
+      if (!(target_metadata.length() >= 4 && target_metadata.substr(0, 4) == "llvm")) {
+        target_metadata = "llvm " + target_metadata;
+      }
     } else {
       std::ostringstream os;
       os << "llvm -mtriple " << module_->getTargetTriple();
-      target_ = os.str();
+      target_metadata = os.str();
     }
     mptr_ = module_.get();
-    tm_ = GetLLVMTargetMachine(target_);
+    tm_ = GetLLVMTargetMachine(Target(target_metadata));
   }
 
   void LoadIR(const std::string& file_name) {
@@ -284,6 +314,9 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     if (ee_) {
       return;
     }
+    if (!target_.defined()) {
+      target_ = Target("llvm");
+    }
     llvm::EngineBuilder builder(std::move(module_));
     std::string triple, mcpu, mattr;
     llvm::TargetOptions opt;
@@ -299,19 +332,19 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     }
     builder.setTargetOptions(opt);
     auto tm = std::unique_ptr<llvm::TargetMachine>(builder.selectTarget());
-    std::unique_ptr<llvm::TargetMachine> tm_sys = GetLLVMTargetMachine("llvm");
+    std::unique_ptr<llvm::TargetMachine> tm_sys = GetLLVMTargetMachine(Target("llvm"));
     if (tm_sys->getTargetTriple().getArch() != tm->getTargetTriple().getArch()) {
       LOG(FATAL) << "Cannot run module, architecture mismatch "
                  << " module=" << tm->getTargetTriple().str()
                  << " system=" << tm_sys->getTargetTriple().str();
     }
     llvm::DataLayout layout(tm->createDataLayout());
-    CHECK(layout == mptr_->getDataLayout())
+    ICHECK(layout == mptr_->getDataLayout())
         << "Data layout mismatch between module("
         << mptr_->getDataLayout().getStringRepresentation() << ")"
         << " and ExecutionEngine (" << layout.getStringRepresentation() << ")";
     ee_ = builder.create(tm.release());
-    CHECK(ee_ != nullptr) << "Failed to initialize jit engine for " << mptr_->getTargetTriple();
+    ICHECK(ee_ != nullptr) << "Failed to initialize jit engine for " << mptr_->getTargetTriple();
     ee_->runStaticConstructorsDestructors(false);
 
     if (void** ctx_addr =
@@ -340,7 +373,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
   }
 
   // The target configuration string
-  std::string target_;
+  Target target_;
   // JIT lock
   std::mutex mutex_;
   // execution engine
@@ -353,66 +386,118 @@ class LLVMModuleNode final : public runtime::ModuleNode {
   std::unique_ptr<llvm::Module> module_;
   // the context.
   std::shared_ptr<llvm::LLVMContext> ctx_;
+  /* \brief names of the functions declared in this module */
+  Array<String> function_names_;
 };
 
-unsigned LookupLLVMIntrinsic(const std::string& name) {
-  return llvm::Function::lookupIntrinsicID(name);
-}
+TVM_REGISTER_GLOBAL("target.build.llvm")
+    .set_body_typed([](IRModule mod, Target target) -> runtime::Module {
+      auto n = make_object<LLVMModuleNode>();
+      n->Init(mod, target);
+      return runtime::Module(n);
+    });
 
-TVM_REGISTER_GLOBAL("target.build.llvm").set_body_typed([](IRModule mod, std::string target) {
-  auto n = make_object<LLVMModuleNode>();
-  n->Init(mod, target);
-  return runtime::Module(n);
+TVM_REGISTER_GLOBAL("codegen.LLVMModuleCreate")
+    .set_body_typed([](std::string target_str, std::string module_name) -> runtime::Module {
+      Target target = Target(target_str);
+      auto n = make_object<LLVMModuleNode>();
+      // Generate a LLVM module from an input target string
+      InitializeLLVM();
+      auto tm = GetLLVMTargetMachine(target);
+      auto ctx = std::make_shared<llvm::LLVMContext>();
+      std::unique_ptr<llvm::Module> module(new llvm::Module(module_name, *ctx));
+      // Use a default data layout and target triple
+      auto triple = tm->getTargetTriple();
+      module->setTargetTriple(triple.str());
+      module->setDataLayout(tm->createDataLayout());
+      n->Init(std::move(module), ctx);
+      return runtime::Module(n);
+    });
+
+TVM_REGISTER_GLOBAL("target.llvm_lookup_intrinsic_id")
+    .set_body_typed([](std::string name) -> int64_t {
+      return static_cast<int64_t>(llvm::Function::lookupIntrinsicID(name));
+    });
+
+TVM_REGISTER_GLOBAL("target.llvm_version_major").set_body_typed([]() -> int {
+  return TVM_LLVM_VERSION / 10;
 });
 
-TVM_REGISTER_GLOBAL("codegen.LLVMModuleCreate").set_body([](TVMArgs args, TVMRetValue* rv) {
-  auto n = make_object<LLVMModuleNode>();
-  auto target = args[0].operator std::string();
-  auto module_name = args[1].operator std::string();
+TVM_REGISTER_GLOBAL("runtime.module.loadfile_ll")
+    .set_body_typed([](std::string filename, std::string fmt) -> runtime::Module {
+      auto n = make_object<LLVMModuleNode>();
+      n->LoadIR(filename);
+      return runtime::Module(n);
+    });
 
-  // Generate a LLVM module from an input target string
+TVM_REGISTER_GLOBAL("codegen.llvm_target_enabled")
+    .set_body_typed([](std::string target_str) -> bool {
+      InitializeLLVM();
+      Target target = Target(target_str);
+      return (GetLLVMTargetMachine(target, true) != nullptr);
+    });
+
+TVM_REGISTER_GLOBAL("codegen.codegen_blob")
+    .set_body_typed([](std::string data, bool system_lib,
+                       std::string target_triple) -> runtime::Module {
+      auto n = make_object<LLVMModuleNode>();
+      auto p = CodeGenBlob(data, system_lib, target_triple);
+      n->Init(std::move(p.first), p.second);
+      return runtime::Module(n);
+    });
+
+runtime::Module CreateLLVMCrtMetadataModule(const Array<runtime::Module>& modules, Target target) {
+  Array<String> func_names;
+  for (runtime::Module mod : modules) {
+    auto pf_funcs = mod.GetFunction("get_func_names");
+    if (pf_funcs != nullptr) {
+      Array<String> func_names_ = pf_funcs();
+      for (const auto& fname : func_names_) {
+        func_names.push_back(fname);
+      }
+    }
+  }
+
   InitializeLLVM();
   auto tm = GetLLVMTargetMachine(target);
+  bool system_lib = target->GetAttr<Bool>("system-lib").value_or(Bool(false));
+  bool target_c_runtime = (target->GetAttr<String>("runtime").value_or("") == kTvmRuntimeCrt);
+  ICHECK(system_lib && target_c_runtime)
+      << "For LLVM C-runtime metadata module, must include --system-lib and --runtime=c; "
+      << "got target: " << target->str();
   auto ctx = std::make_shared<llvm::LLVMContext>();
-  std::unique_ptr<llvm::Module> module(new llvm::Module(module_name, *ctx));
+  std::unique_ptr<CodeGenCPU> cg{new CodeGenCPU()};
+  cg->Init("TVMMetadataMod", tm.get(), ctx.get(), system_lib, system_lib, target_c_runtime);
 
-  // Use a default data layout and target triple
-  auto triple = tm->getTargetTriple();
-  module->setTargetTriple(triple.str());
-  module->setDataLayout(tm->createDataLayout());
+  cg->DefineFunctionRegistry(func_names);
+  auto mod = cg->Finish();
+  mod->addModuleFlag(llvm::Module::Warning, "tvm_target",
+                     llvm::MDString::get(*ctx, LLVMTargetToString(target)));
+  mod->addModuleFlag(llvm::Module::Override, "Debug Info Version", llvm::DEBUG_METADATA_VERSION);
 
-  n->Init(std::move(module), ctx);
+  if (tm->getTargetTriple().isOSDarwin()) {
+    mod->addModuleFlag(llvm::Module::Override, "Dwarf Version", 2);
+  }
 
-  *rv = runtime::Module(n);
-});
+  std::string verify_errors_storage;
+  llvm::raw_string_ostream verify_errors(verify_errors_storage);
+  LOG_IF(FATAL, llvm::verifyModule(*mod, &verify_errors))
+      << "LLVM module verification failed with the following errors: \n"
+      << verify_errors.str();
 
-TVM_REGISTER_GLOBAL("target.llvm_lookup_intrinsic_id").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = static_cast<int64_t>(LookupLLVMIntrinsic(args[0]));
-});
-
-TVM_REGISTER_GLOBAL("target.llvm_version_major").set_body([](TVMArgs args, TVMRetValue* rv) {
-  int major = TVM_LLVM_VERSION / 10;
-  *rv = major;
-});
-
-TVM_REGISTER_GLOBAL("runtime.module.loadfile_ll").set_body([](TVMArgs args, TVMRetValue* rv) {
   auto n = make_object<LLVMModuleNode>();
-  n->LoadIR(args[0]);
-  *rv = runtime::Module(n);
-});
+  n->Init(std::move(mod), ctx);
+  for (auto m : modules) {
+    n->Import(m);
+  }
+  return runtime::Module(n);
+}
 
-TVM_REGISTER_GLOBAL("codegen.llvm_target_enabled").set_body([](TVMArgs args, TVMRetValue* rv) {
-  InitializeLLVM();
-  *rv = (GetLLVMTargetMachine(args[0], true) != nullptr);
-});
+TVM_REGISTER_GLOBAL("runtime.CreateLLVMCrtMetadataModule")
+    .set_body_typed([](const Array<runtime::Module>& modules, Target target) {
+      return CreateLLVMCrtMetadataModule(modules, target);
+    });
 
-TVM_REGISTER_GLOBAL("codegen.codegen_blob").set_body([](TVMArgs args, TVMRetValue* rv) {
-  auto n = make_object<LLVMModuleNode>();
-  auto p = CodeGenBlob(args[0].operator std::string(), args[1].operator bool(),
-                       args[2].operator std::string());
-  n->Init(std::move(p.first), p.second);
-  *rv = runtime::Module(n);
-});
 }  // namespace codegen
 }  // namespace tvm
 #endif  // TVM_LLVM_VERSION

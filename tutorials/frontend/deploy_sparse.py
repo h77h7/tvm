@@ -81,8 +81,8 @@ import time
 import itertools
 import numpy as np
 import tensorflow as tf
-from tvm import relay
-from tvm.contrib import graph_runtime
+from tvm import relay, runtime
+from tvm.contrib import graph_executor
 from tvm.relay import data_dep_optimization as ddo
 from tensorflow.python.framework.convert_to_constants import (
     convert_variables_to_constants_v2,
@@ -102,13 +102,11 @@ name = "huggingface/prunebert-base-uncased-6-finepruned-w-distil-squad"
 batch_size = 1
 # The length of each input sequence.
 seq_len = 128
-# TVM platform identifier. Although cuda is also supported, it requires
-# tuning that is outside the scope of this tutorial. Note that best
-# cpu performance can be achieved by setting -mcpu appropriately for
-# your specific machine.
+# TVM platform identifier. Note that best cpu performance can be achieved by setting -mcpu
+# appropriately for your specific machine. CUDA and ROCm are also supported.
 target = "llvm"
 # Which device to run on. Should be one of tvm.cpu() or tvm.gpu().
-ctx = tvm.cpu()
+dev = tvm.cpu()
 # If true, then a sparse variant of the network will be run and
 # benchmarked.
 measure_sparse = True
@@ -132,9 +130,9 @@ def load_keras_model(module, name, seq_len, batch_size, report_runtime=True):
     dummy_input = tf.keras.Input(shape=[seq_len], batch_size=batch_size, dtype="int32")
     dummy_out = model(dummy_input)  # Propagate shapes through the keras model.
     if report_runtime:
-        np_input = np.random.uniform(
-            size=[batch_size, seq_len], low=0, high=seq_len
-        ).astype("int32")
+        np_input = np.random.uniform(size=[batch_size, seq_len], low=0, high=seq_len).astype(
+            "int32"
+        )
         start = time.time()
         repeats = 50
         for i in range(repeats):
@@ -180,12 +178,8 @@ def import_graphdef(
 ):
     abs_path = os.path.dirname(os.path.abspath(__file__))
     shape_dict = {"input_1": (batch_size, seq_len)}
-    relay_file = ("%s_%d_%d_%s" % (name, batch_size, seq_len, relay_file)).replace(
-        "/", "_"
-    )
-    relay_params = ("%s_%d_%d_%s" % (name, batch_size, seq_len, relay_params)).replace(
-        "/", "_"
-    )
+    relay_file = ("%s_%d_%d_%s" % (name, batch_size, seq_len, relay_file)).replace("/", "_")
+    relay_params = ("%s_%d_%d_%s" % (name, batch_size, seq_len, relay_params)).replace("/", "_")
     if os.path.exists(os.path.join(abs_path, relay_file)) and os.path.exists(
         os.path.join(abs_path, relay_params)
     ):
@@ -202,7 +196,7 @@ def import_graphdef(
             with open(os.path.join(abs_path, relay_file), "w") as fo:
                 fo.write(tvm.ir.save_json(mod))
             with open(os.path.join(abs_path, relay_params), "wb") as fo:
-                fo.write(relay.save_param_dict(params))
+                fo.write(runtime.save_param_dict(params))
 
     return mod, params, shape_dict
 
@@ -214,20 +208,18 @@ def import_graphdef(
 # the weights are sparse, we won't see any speedup because we are using
 # regular dense matrix multiplications on these dense (but mostly zero)
 # tensors instead of sparse aware kernels.
-def run_relay_graph(mod, params, shape_dict, target, ctx):
+def run_relay_graph(mod, params, shape_dict, target, dev):
     with relay.build_config(opt_level=3):
         lib = relay.build(mod, target=target, params=params)
     input_shape = shape_dict["input_1"]
-    dummy_data = np.random.uniform(size=input_shape, low=0, high=input_shape[1]).astype(
-        "int32"
-    )
+    dummy_data = np.random.uniform(size=input_shape, low=0, high=input_shape[1]).astype("int32")
 
-    m = graph_runtime.GraphModule(lib['default'](ctx))
+    m = graph_executor.GraphModule(lib["default"](dev))
     m.set_input(0, dummy_data)
     m.run()
     tvm_output = m.get_output(0)
 
-    ftimer = m.module.time_evaluator("run", ctx, repeat=5, number=5)
+    ftimer = m.module.time_evaluator("run", dev, repeat=5, number=5)
     prof_res = np.array(ftimer().results) * 1000
     print(
         "%-20s %-19s (%s)"
@@ -236,9 +228,9 @@ def run_relay_graph(mod, params, shape_dict, target, ctx):
     return tvm_output
 
 
-def run_dense(mod, params, shape_dict, target, ctx):
+def run_dense(mod, params, shape_dict, target, dev):
     print("Dense Model Benchmark:")
-    return run_relay_graph(mod, params, shape_dict, target, ctx)
+    return run_relay_graph(mod, params, shape_dict, target, dev)
 
 
 ###############################################################################
@@ -252,7 +244,7 @@ def run_dense(mod, params, shape_dict, target, ctx):
 # into the parameters. This makes it easier to convert to matrix multiplies
 # to sparse versions. Next we apply `bsr_dense.convert` to identify all
 # weight matrices that can be sparse, and automatically replace them.
-# 
+#
 # The `bsr_dense.convert` call below is doing the heavy lifting of identifying
 # which weights in the model can be made sparse by checking if they are
 # at least `sparsity_threshold` percent sparse. If so, it converts those
@@ -269,9 +261,7 @@ def random_bsr_matrix(M, N, BS_R, BS_C, density, dtype="float32"):
     assert N % BS_C == 0
     nnz = int(density * M * N)
     num_blocks = int(nnz / (BS_R * BS_C)) + 1
-    candidate_blocks = np.asarray(
-        list(itertools.product(range(0, M, BS_R), range(0, N, BS_C)))
-    )
+    candidate_blocks = np.asarray(list(itertools.product(range(0, M, BS_R), range(0, N, BS_C))))
     assert candidate_blocks.shape[0] == M // BS_R * N // BS_C
     chosen_blocks = candidate_blocks[
         np.random.choice(candidate_blocks.shape[0], size=num_blocks, replace=False)
@@ -305,15 +295,13 @@ def random_sparse_bert_params(func, params, density, BS_R, BS_C):
     return new_params
 
 
-def run_sparse(mod, params, shape_dict, target, ctx, bs_r, sparsity, gen_weights):
+def run_sparse(mod, params, shape_dict, target, dev, bs_r, sparsity, gen_weights):
     mod, params = ddo.simplify_fc_transpose.convert(mod["main"], params)
     if gen_weights:
-        params = random_sparse_bert_params(
-            mod, params, BS_R=bs_r, BS_C=1, density=1 - sparsity
-        )
+        params = random_sparse_bert_params(mod, params, BS_R=bs_r, BS_C=1, density=1 - sparsity)
     mod, params = ddo.bsr_dense.convert(mod, params, (bs_r, 1), sparsity_threshold=0.8)
     print("Block Sparse Model with {blocksize}x1 blocks:".format(blocksize=bs_r))
-    return run_relay_graph(mod, params, shape_dict, target, ctx)
+    return run_relay_graph(mod, params, shape_dict, target, dev)
 
 
 ###############################################################################
@@ -324,10 +312,10 @@ def run_sparse(mod, params, shape_dict, target, ctx, bs_r, sparsity, gen_weights
 # you'll need to uncomment the last line first.
 def benchmark():
     mod, params, shape_dict = import_graphdef(name, batch_size, seq_len)
-    run_dense(mod, params, shape_dict, target, ctx)
+    run_dense(mod, params, shape_dict, target, dev)
     if measure_sparse:
         gen_weights = "prune" not in name
-        run_sparse(mod, params, shape_dict, target, ctx, bs_r, sparsity, gen_weights)
+        run_sparse(mod, params, shape_dict, target, dev, bs_r, sparsity, gen_weights)
 
 
 # benchmark()
@@ -349,3 +337,17 @@ def benchmark():
 # Runtime:             165.26 ms           (12.83 ms)
 # Block Sparse Model with 1x1 blocks:
 # Runtime:             67.75 ms            (8.83 ms)
+
+# Here is the output of this script on a GPU (GTX 1070) with the target "cuda -libs=cublas".
+#
+# Dense Model Benchmark:
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('dense_cublas.cuda', ('TENSOR', (1, 768), 'float32'), ('TENSOR', (2, 768), 'float32'), None, 'float32'). A fallback configuration is used, which may bring great performance regression.
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('dense_cublas.cuda', ('TENSOR', (1, 768), 'float32'), ('TENSOR', (768, 768), 'float32'), None, 'float32'). A fallback configuration is used, which may bring great performance regression.
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('dense_cublas.cuda', ('TENSOR', (128, 3072), 'float32'), ('TENSOR', (768, 3072), 'float32'), None, 'float32'). A fallback configuration is used, which may bring great performance regression.
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('dense_cublas.cuda', ('TENSOR', (128, 768), 'float32'), ('TENSOR', (3072, 768), 'float32'), None, 'float32'). A fallback configuration is used, which may bring great performance regression.
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('dense_cublas.cuda', ('TENSOR', (128, 768), 'float32'), ('TENSOR', (768, 768), 'float32'), None, 'float32'). A fallback configuration is used, which may bring great performance regression.
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('batch_matmul_cublas.cuda', ('TENSOR', (12, 128, 128), 'float32'), ('TENSOR', (12, 64, 128), 'float32'), (12, 128, 64)). A fallback configuration is used, which may bring great performance regression.
+# Cannot find config for target=cuda -keys=cuda,gpu -libs=cublas -max_num_threads=1024 -thread_warp_size=32, workload=('batch_matmul_cublas.cuda', ('TENSOR', (12, 128, 64), 'float32'), ('TENSOR', (12, 128, 64), 'float32'), (12, 128, 128)). A fallback configuration is used, which may bring great performance regression.
+# Runtime:             10.64 ms            (0.29 ms)
+# Block Sparse Model with 1x1 blocks:
+# Runtime:             6.46 ms             (0.05 ms)

@@ -38,6 +38,7 @@ class Buffer(Object):
     --------
     decl_buffer : Declare a buffer
     """
+
     READ = 1
     WRITE = 2
 
@@ -89,8 +90,7 @@ class Buffer(Object):
                     raise ValueError("Unknown access_mask %s" % access_mask)
             access_mask = mask
         offset = convert(offset)
-        return _ffi_api.BufferAccessPtr(self, access_mask, ptr_type,
-                                        content_lanes, offset)
+        return _ffi_api.BufferAccessPtr(self, access_mask, ptr_type, content_lanes, offset)
 
     def vload(self, begin, dtype=None):
         """Generate an Expr that loads dtype from begin index.
@@ -133,16 +133,19 @@ class Buffer(Object):
         return _ffi_api.BufferVStore(self, begin, value)
 
 
-def decl_buffer(shape,
-                dtype=None,
-                name="buffer",
-                data=None,
-                strides=None,
-                elem_offset=None,
-                scope="",
-                data_alignment=-1,
-                offset_factor=0,
-                buffer_type=""):
+def decl_buffer(
+    shape,
+    dtype=None,
+    name="buffer",
+    data=None,
+    strides=None,
+    elem_offset=None,
+    scope="",
+    data_alignment=-1,
+    offset_factor=0,
+    buffer_type="",
+    span=None,
+):
     """Declare a new symbolic buffer.
 
     Normally buffer is created automatically during lower and build.
@@ -190,6 +193,9 @@ def decl_buffer(shape,
         without considering whether dimension size equals to one.
         TVM maps buffer[i][j][k] -> buffer[i][0][k] if dimension j's shape equals 1.
 
+    span: Optional[Span]
+        The location of the decl_buffer creation in the source.
+
     Returns
     -------
     buffer : Buffer
@@ -211,10 +217,10 @@ def decl_buffer(shape,
         Bb = tvm.tir.decl_buffer(B.shape, B.dtype, name="Bb", buffer_type="auto_broadcast")
         s = te.create_schedule(C.op)
         fadd = tvm.build(s, [A, B, C], target='llvm', name='bcast_add', binds={A:Ab, B:Bb})
-        ctx = tvm.cpu(0)
-        a = tvm.nd.array(np.random.uniform(size=(2, 4, 3)).astype(A.dtype), ctx)
-        b = tvm.nd.array(np.random.uniform(size=(2, 1, 3)).astype(B.dtype), ctx)
-        c = tvm.nd.array(np.zeros((2, 4, 3), dtype=C.dtype), ctx)
+        dev = tvm.cpu(0)
+        a = tvm.nd.array(np.random.uniform(size=(2, 4, 3)).astype(A.dtype), dev)
+        b = tvm.nd.array(np.random.uniform(size=(2, 1, 3)).astype(B.dtype), dev)
+        c = tvm.nd.array(np.zeros((2, 4, 3), dtype=C.dtype), dev)
         fadd(a, b, c)
         tvm.testing.assert_allclose(c.asnumpy(), a.asnumpy() + b.asnumpy())
 
@@ -239,12 +245,25 @@ def decl_buffer(shape,
     strides = () if strides is None else strides
     if offset_factor != 0 and elem_offset is None:
         shape_dtype = shape[0].dtype if hasattr(shape[0], "dtype") else "int32"
-        elem_offset = Var('%s_elem_offset' % name, shape_dtype)
+        elem_offset = Var("%s_elem_offset" % name, shape_dtype)
     if data is None:
-        data = Var(name, PointerType(PrimType(dtype)))
+        # Bool is represented as uint1 in the IR, but stored as int8
+        storage_type = PrimType(dtype)
+        storage_type = PrimType("int8") if storage_type.dtype == "bool" else storage_type
+        data = Var(name, PointerType(storage_type), span)
     return _ffi_api.Buffer(
-        data, dtype, shape, strides, elem_offset, name, scope,
-        data_alignment, offset_factor, buffer_type)
+        data,
+        dtype,
+        shape,
+        strides,
+        elem_offset,
+        name,
+        scope,
+        data_alignment,
+        offset_factor,
+        buffer_type,
+        span,
+    )
 
 
 @tvm._ffi.register_object("tir.DataProducer")

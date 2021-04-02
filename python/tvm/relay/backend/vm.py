@@ -27,8 +27,8 @@ import tvm.runtime.ndarray as _nd
 import tvm.runtime.vm as vm_rt
 from tvm import autotvm
 from tvm.relay import expr as _expr
-from tvm.relay.ty import is_dynamic
 from tvm.relay.backend.interpreter import Executor
+from tvm.target import Target
 from . import _vm
 
 
@@ -63,10 +63,13 @@ def compile(mod, target=None, target_host=None, params=None):
     exec : tvm.runtime.vm.Executable
         The VM executable that contains both library code and bytecode.
     """
+    target, target_host = Target.check_and_update_host_consist(
+        target, target_host, target_is_dict_key=False
+    )
     compiler = VMCompiler()
     if params:
         compiler.set_params(params)
-    compiler.lower(mod, target, target_host)
+    compiler.lower(mod, target)
     compiler.codegen()
     return compiler.get_exec()
 
@@ -131,6 +134,10 @@ class VMCompiler(object):
         """
         target = self._update_target(target)
         target_host = self._update_target_host(target, target_host)
+        target, target_host = Target.check_and_update_host_consist(
+            target, target_host, target_is_dict_key=False
+        )
+
         tophub_context = self._tophub_context(target)
         with tophub_context:
             self._lower(mod, target, target_host)
@@ -168,6 +175,10 @@ class VMCompiler(object):
         """
         target = self._update_target(target)
         target_host = self._update_target_host(target, target_host)
+        target, target_host = Target.check_and_update_host_consist(
+            target, target_host, target_is_dict_key=False
+        )
+
         if params:
             self.set_params(params)
         return self._optimize(mod, target, target_host), self.get_params()
@@ -189,22 +200,27 @@ class VMCompiler(object):
             raise ValueError("Target is not set in env or passed as argument.")
         tgts = {}
         if isinstance(target, (str, tvm.target.Target)):
-            dev_type = tvm.tir.IntImm("int32", tvm.nd.context(str(target)).device_type)
-            tgts[dev_type] = tvm.target.create(target)
+            dev_type = tvm.tir.IntImm("int32", tvm.nd.device(str(target)).device_type)
+            tgts[dev_type] = tvm.target.Target(target)
         elif isinstance(target, dict):
             for dev, tgt in target.items():
-                dev_type = tvm.tir.IntImm("int32", tvm.nd.context(dev).device_type)
-                tgts[dev_type] = tvm.target.create(tgt)
+                dev_type = tvm.tir.IntImm("int32", tvm.nd.device(dev).device_type)
+                tgts[dev_type] = tvm.target.Target(tgt)
         else:
-            raise TypeError("target is expected to be str, tvm.target.Target, " +
-                            "or dict of str to str/tvm.target.Target, but received " +
-                            "{}".format(type(target)))
+            raise TypeError(
+                "target is expected to be str, tvm.target.Target, "
+                + "or dict of str to str/tvm.target.Target, but received "
+                + "{}".format(type(target))
+            )
         return tgts
 
     def _update_target_host(self, target, target_host):
         """Update target host."""
         target_host = None if target_host == "" else target_host
         if not target_host:
+            for _, tgt in target.items():
+                if tgt.host is not None:
+                    return tgt.host
             for device_type, tgt in target.items():
                 if device_type.value == tvm.nd.cpu(0).device_type:
                     target_host = tgt
@@ -212,7 +228,7 @@ class VMCompiler(object):
         if not target_host:
             target_host = "llvm" if tvm.runtime.enabled("llvm") else "stackvm"
         if isinstance(target_host, str):
-            target_host = tvm.target.create(target_host)
+            target_host = tvm.target.Target(target_host)
         return target_host
 
     def _tophub_context(self, target):
@@ -222,7 +238,7 @@ class VMCompiler(object):
         if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
             tophub_context = autotvm.tophub.context(list(target.values()))
         else:
-            tophub_context = autotvm.util.EmptyContext()
+            tophub_context = autotvm.utils.EmptyContext()
         return tophub_context
 
 
@@ -240,33 +256,27 @@ class VMExecutor(Executor):
     mod : :py:class:`~tvm.IRModule`
         The module to support the execution.
 
-    ctx : :py:class:`~tvmContext`
-        The runtime context to run the code on.
+    device : :py:class:`~tvm.runtime.Device`
+        The runtime device to run the code on.
 
     target : :py:class:`Target`
         The target option to build the function.
     """
 
-    def __init__(self, mod, ctx, target):
+    def __init__(self, mod, device, target):
         if mod is None:
             raise RuntimeError("Must provide module to get VM executor.")
         self.mod = mod
-        self.ctx = ctx
+        self.device = device
         self.target = target
         self.executable = compile(mod, target)
-        self.vm = vm_rt.VirtualMachine(self.executable, ctx)
+        self.vm = vm_rt.VirtualMachine(self.executable, device)
 
     def _make_executor(self, expr=None):
         main = self.mod["main"]
 
         def _vm_wrapper(*args, **kwargs):
             args = self._convert_args(main, args, kwargs)
-            ret_type = self.mod["main"].checked_type.ret_type
-            if is_dynamic(ret_type) and "llvm" not in str(self.target) and "arm" not in str(
-                    self.target):
-                raise ValueError(
-                    "Virtual Machine only supports dynamic graphs on CPU, got output type",
-                    ret_type, "on target", self.target)
             return self.vm.run(*args)
 
         return _vm_wrapper

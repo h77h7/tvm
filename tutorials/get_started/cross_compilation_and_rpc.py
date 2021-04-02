@@ -49,7 +49,7 @@ and the Firefly-RK3399 for an OpenCL example.
 #
 # .. code-block:: bash
 #
-#   git clone --recursive https://github.com/apache/incubator-tvm tvm
+#   git clone --recursive https://github.com/apache/tvm tvm
 #   cd tvm
 #   make runtime -j2
 #
@@ -98,11 +98,11 @@ import numpy as np
 import tvm
 from tvm import te
 from tvm import rpc
-from tvm.contrib import util
+from tvm.contrib import utils
 
 n = tvm.runtime.convert(1024)
-A = te.placeholder((n,), name='A')
-B = te.compute((n,), lambda i: A[i] + 1.0, name='B')
+A = te.placeholder((n,), name="A")
+B = te.compute((n,), lambda i: A[i] + 1.0, name="B")
 s = te.create_schedule(B.op)
 
 ######################################################################
@@ -114,14 +114,14 @@ s = te.create_schedule(B.op)
 local_demo = True
 
 if local_demo:
-    target = 'llvm'
+    target = "llvm"
 else:
-    target = 'llvm -mtriple=armv7l-linux-gnueabihf'
+    target = "llvm -mtriple=armv7l-linux-gnueabihf"
 
-func = tvm.build(s, [A, B], target=target, name='add_one')
+func = tvm.build(s, [A, B], target=target, name="add_one")
 # save the lib at a local temp folder
-temp = util.tempdir()
-path = temp.relpath('lib.tar')
+temp = utils.tempdir()
+path = temp.relpath("lib.tar")
 func.export_library(path)
 
 ######################################################################
@@ -168,7 +168,7 @@ if local_demo:
     remote = rpc.LocalSession()
 else:
     # The following is my environment, change this to the IP address of your target device
-    host = '10.77.1.162'
+    host = "10.77.1.162"
     port = 9090
     remote = rpc.connect(host, port)
 
@@ -177,12 +177,12 @@ else:
 # compiler to relink them. Now `func` is a remote module object.
 
 remote.upload(path)
-func = remote.load_module('lib.tar')
+func = remote.load_module("lib.tar")
 
 # create arrays on the remote device
-ctx = remote.cpu()
-a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), ctx)
-b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), ctx)
+dev = remote.cpu()
+a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), dev)
+b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), dev)
 # the function will run on the remote device
 func(a, b)
 np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
@@ -194,9 +194,9 @@ np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
 # function over number times, measures the cost per run on the remote
 # device and returns the measured cost. Network overhead is excluded.
 
-time_f = func.time_evaluator(func.entry_name, ctx, number=10)
+time_f = func.time_evaluator(func.entry_name, dev, number=10)
 cost = time_f(a, b).mean
-print('%g secs/op' % cost)
+print("%g secs/op" % cost)
 
 #########################################################################
 # Run OpenCL Kernel Remotely by RPC
@@ -221,35 +221,37 @@ print('%g secs/op' % cost)
 #
 # The following function shows how we run an OpenCL kernel remotely
 
+
 def run_opencl():
     # NOTE: This is the setting for my rk3399 board. You need to modify
     # them according to your environment.
-    target_host = "llvm -mtriple=aarch64-linux-gnu"
-    opencl_device_host = '10.77.1.145'
+    opencl_device_host = "10.77.1.145"
     opencl_device_port = 9090
+    target = tvm.target.Target("opencl", host="llvm -mtriple=aarch64-linux-gnu")
 
     # create schedule for the above "add one" compute declaration
     s = te.create_schedule(B.op)
     xo, xi = s[B].split(B.op.axis[0], factor=32)
     s[B].bind(xo, te.thread_axis("blockIdx.x"))
     s[B].bind(xi, te.thread_axis("threadIdx.x"))
-    func = tvm.build(s, [A, B], "opencl", target_host=target_host)
+    func = tvm.build(s, [A, B], target=target)
 
     remote = rpc.connect(opencl_device_host, opencl_device_port)
 
     # export and upload
-    path = temp.relpath('lib_cl.tar')
+    path = temp.relpath("lib_cl.tar")
     func.export_library(path)
     remote.upload(path)
-    func = remote.load_module('lib_cl.tar')
+    func = remote.load_module("lib_cl.tar")
 
     # run
-    ctx = remote.cl()
-    a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), ctx)
-    b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), ctx)
+    dev = remote.cl()
+    a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), dev)
+    b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), dev)
     func(a, b)
     np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
     print("OpenCL test passed!")
+
 
 ######################################################################
 # Summary

@@ -27,10 +27,14 @@ import tvm
 from . import _ffi_api
 
 
-SparseAnalysisResult = namedtuple("SparseAnalysisResult", [
-    "weight_name",
-    "weight_shape",
-])
+SparseAnalysisResult = namedtuple(
+    "SparseAnalysisResult",
+    [
+        "weight_name",
+        "weight_shape",
+    ],
+)
+
 
 def _search_dense_op_weight(expr):
     """Search name of weight in all ```nn.dense``` operator
@@ -69,6 +73,12 @@ def process_params(expr, params, block_size, sparsity_threshold):
     ret : Namedtuple[weight_name: Array[String], weight_shape: Array[Array[IntImm]]]
         return names of qualified dense weight and the shape in BSR format
     """
+
+    # pylint: disable=import-outside-toplevel
+    from tvm.auto_scheduler.search_task import (
+        register_task_input_buffer,
+    )  # lazily import to avoid recursive dependency
+
     memo = SparseAnalysisResult(weight_name=[], weight_shape=[])
     weight_names = _search_dense_op_weight(expr)
     for name in weight_names:
@@ -80,14 +90,33 @@ def process_params(expr, params, block_size, sparsity_threshold):
             # remove dense weight
             del params[name]
             memo.weight_name.append(name)
-            memo.weight_shape.append(list(sparse_weight.data.shape) +
-                                     list(sparse_weight.indices.shape) +
-                                     list(sparse_weight.indptr.shape))
+            memo.weight_shape.append(
+                list(sparse_weight.data.shape)
+                + list(sparse_weight.indices.shape)
+                + list(sparse_weight.indptr.shape)
+            )
             params[name + ".data"] = tvm.nd.array(sparse_weight.data)
             params[name + ".indices"] = tvm.nd.array(sparse_weight.indices)
             params[name + ".indptr"] = tvm.nd.array(sparse_weight.indptr)
+
+            prefix = "sparse_dense_bsr_%d_%d_%d_%d_%.2f_" % (
+                w_np.shape[0],
+                w_np.shape[1],
+                block_size[0],
+                block_size[1],
+                1 - sparsity,
+            )
+            register_task_input_buffer(
+                "default", prefix + "W_data", tvm.runtime.ndarray.array(sparse_weight.data)
+            )
+            register_task_input_buffer(
+                "default", prefix + "W_indices", tvm.runtime.ndarray.array(sparse_weight.indices)
+            )
+            register_task_input_buffer(
+                "default", prefix + "W_indptr", tvm.runtime.ndarray.array(sparse_weight.indptr)
+            )
     ret = SparseAnalysisResult(
         weight_name=tvm.runtime.convert(memo.weight_name),
-        weight_shape=tvm.runtime.convert(memo.weight_shape)
+        weight_shape=tvm.runtime.convert(memo.weight_shape),
     )
     return ret

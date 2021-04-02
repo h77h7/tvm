@@ -25,27 +25,26 @@ import logging
 
 import tvm
 from tvm.autotvm.task.dispatcher import DispatchContext, FallbackContext
+from tvm.target import Target
 from .task import create
 from .topi_integration import TaskExtractEnv
 
-logger = logging.getLogger('autotvm')
+logger = logging.getLogger("autotvm")
 
 
 # TODO(moreau89) find a more elegant way to lower for VTAs
-def _lower(mod,
-           target,
-           params):
-    """ Helper to lower VTA properly.
-    """
+def _lower(mod, target, params):
+    """Helper to lower VTA properly."""
     # pylint: disable=import-outside-toplevel
     from tvm import relay
-    from tvm.relay.backend import graph_runtime_codegen
+    from tvm.relay.backend import graph_executor_codegen
 
-    if hasattr(target, 'device_name') and target.device_name == "vta":
+    if hasattr(target, "device_name") and target.device_name == "vta":
         import vta
+
         with vta.build_config(opt_level=3, disabled_pass={"AlterOpLayout"}):
             mod, _ = relay.optimize(mod, target, params)
-            grc = graph_runtime_codegen.GraphRuntimeCodegen(None, target)
+            grc = graph_executor_codegen.GraphExecutorCodegen(None, target)
             grc.codegen(mod["main"])
             return
 
@@ -55,11 +54,13 @@ def _lower(mod,
     # TODO: Currently VM compiler is likely to stack overflow for large models.
     try:
         opt_mod, _ = relay.optimize(mod, target, params)
-        grc = graph_runtime_codegen.GraphRuntimeCodegen(None, target)
+        grc = graph_executor_codegen.GraphExecutorCodegen(None, target)
         grc.codegen(opt_mod["main"])
     except tvm.TVMError as e:
-        print("Get errors with GraphRuntimeCodegen for task extraction. "
-              "Fallback to VMCompiler. Error details:\n%s" % str(e))
+        print(
+            "Get errors with GraphExecutorCodegen for task extraction. "
+            "Fallback to VMCompiler. Error details:\n%s" % str(e)
+        )
         compiler = relay.vm.VMCompiler()
         if params:
             compiler.set_params(params)
@@ -67,7 +68,7 @@ def _lower(mod,
 
 
 def extract_from_program(mod, params, target, target_host=None, ops=None):
-    """ Extract tuning tasks from a relay program.
+    """Extract tuning tasks from a relay program.
 
     This function is the single program version of extract_from_multiple_program.
 
@@ -89,11 +90,12 @@ def extract_from_program(mod, params, target, target_host=None, ops=None):
     task: Array of autotvm.task.Task
         collected tasks
     """
-    return extract_from_multiple_program([mod], [params], target, target_host, ops)
+    target, target_host = Target.check_and_update_host_consist(target, target_host)
+    return extract_from_multiple_program([mod], [params], target, ops=ops)
 
 
 def extract_from_multiple_program(mods, params, target, target_host=None, ops=None):
-    """ Extract tuning tasks from multiple relay programs.
+    """Extract tuning tasks from multiple relay programs.
 
     This function collects tuning tasks by building a list of programs
     with a "tracing" target and tracing all the calls to topi.
@@ -122,6 +124,9 @@ def extract_from_multiple_program(mods, params, target, target_host=None, ops=No
 
     env = TaskExtractEnv.get()
 
+    # merge target and target host
+    target, target_host = Target.check_and_update_host_consist(target, target_host)
+
     # run compiler to collect all TOPI calls during compilation
     env.reset(ops)
     with env:
@@ -132,12 +137,12 @@ def extract_from_multiple_program(mods, params, target, target_host=None, ops=No
         for mod, param in zip(mods, params):
             if isinstance(mod, relay.function.Function):
                 mod = tvm.IRModule.from_expr(mod)
-            assert isinstance(mod, tvm.IRModule), \
-                "only support relay Module or Function to be tuned"
+            assert isinstance(
+                mod, tvm.IRModule
+            ), "only support relay Module or Function to be tuned"
             relay.backend.compile_engine.get().clear()
             # wrap build call in thread to avoid multiprocessing problems
-            build_thread = threading.Thread(target=_lower,
-                                            args=(mod, target, param))
+            build_thread = threading.Thread(target=_lower, args=(mod, target, param))
             build_thread.start()
             build_thread.join()
             relay.backend.compile_engine.get().clear()
@@ -152,8 +157,7 @@ def extract_from_multiple_program(mods, params, target, target_host=None, ops=No
     tasks = []
     for task_name, args in env.get_tasks():
         try:
-            tsk = create(task_name, args,
-                         target=target, target_host=target_host)
+            tsk = create(task_name, args, target=target)
             tasks.append(tsk)
         except topi.InvalidShapeError:
             logger.warning("Invalid shape during AutoTVM task creation")

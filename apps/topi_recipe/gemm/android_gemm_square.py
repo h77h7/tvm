@@ -19,7 +19,7 @@ import tvm
 from tvm import te
 import os
 from tvm import rpc
-from tvm.contrib import util, ndk
+from tvm.contrib import utils, ndk
 import numpy as np
 
 # Set to be address of tvm proxy.
@@ -32,38 +32,41 @@ key = "android"
 arch = "arm64"
 target = "llvm -mtriple=%s-linux-android" % arch
 
-def ngflops(N):
-    return 2.0 * float(N * N * N) / (10**9)
 
-dtype = 'float32'
-def evaluate(func, ctx, N, times):
+def ngflops(N):
+    return 2.0 * float(N * N * N) / (10 ** 9)
+
+
+dtype = "float32"
+
+
+def evaluate(func, dev, N, times):
     a_np = np.random.uniform(size=(N, N)).astype(dtype)
     b_np = np.random.uniform(size=(N, N)).astype(dtype)
-    a = tvm.nd.array(a_np, ctx)
-    b = tvm.nd.array(b_np, ctx)
-    c = tvm.nd.array(np.zeros((N, N), dtype=dtype), ctx)
+    a = tvm.nd.array(a_np, dev)
+    b = tvm.nd.array(b_np, dev)
+    c = tvm.nd.array(np.zeros((N, N), dtype=dtype), dev)
 
-    time_f = func.time_evaluator(func.entry_name, ctx, number=times)
+    time_f = func.time_evaluator(func.entry_name, dev, number=times)
     cost = time_f(a, b, c).mean
     gf = ngflops(N) / cost
-    print('%g secs/op, %g GFLOPS' % (cost, gf))
+    print("%g secs/op, %g GFLOPS" % (cost, gf))
     np.testing.assert_almost_equal(c.asnumpy(), a_np.dot(b_np), decimal=2)
 
-def test_gemm_gpu(N, times, bn, num_block, num_thread):
-    assert(bn <= N)
-    assert(num_thread * num_thread * 16 <= N)
-    assert(num_block * num_block * 2 <= N)
-    A = te.placeholder((N, N), name='A')
-    B = te.placeholder((N, N), name='Btmp')
-    k = te.reduce_axis((0, N), name='k')
 
-    packedB = te.compute((N, N / bn, bn),
-              lambda x, y, z: B[x, y * bn + z], name = 'B')
+def test_gemm_gpu(N, times, bn, num_block, num_thread):
+    assert bn <= N
+    assert num_thread * num_thread * 16 <= N
+    assert num_block * num_block * 2 <= N
+    A = te.placeholder((N, N), name="A")
+    B = te.placeholder((N, N), name="Btmp")
+    k = te.reduce_axis((0, N), name="k")
+
+    packedB = te.compute((N, N / bn, bn), lambda x, y, z: B[x, y * bn + z], name="B")
 
     C = te.compute(
-        (N, N),
-        lambda ii, jj: te.sum(A[ii, k] * packedB[k, jj / bn, jj % bn], axis=k),
-        name='C')
+        (N, N), lambda ii, jj: te.sum(A[ii, k] * packedB[k, jj / bn, jj % bn], axis=k), name="C"
+    )
 
     s = te.create_schedule(C.op)
     CC = s.cache_write(C, "local")
@@ -118,17 +121,18 @@ def test_gemm_gpu(N, times, bn, num_block, num_thread):
     print(tvm.lower(s, [A, B, C], simple_mode=True))
 
     f = tvm.build(s, [A, B, C], "opencl", target_host=target, name="gemm_gpu")
-    temp = util.tempdir()
+    temp = utils.tempdir()
     path_dso = temp.relpath("gemm_gpu.so")
     f.export_library(path_dso, ndk.create_shared)
 
     # connect to the proxy
     remote = rpc.connect(proxy_host, proxy_port, key=key)
-    ctx = remote.cl(0)
+    dev = remote.cl(0)
     remote.upload(path_dso)
     f = remote.load_module("gemm_gpu.so")
 
-    evaluate(f, ctx, N, times)
+    evaluate(f, dev, N, times)
+
 
 if __name__ == "__main__":
     test_gemm_gpu(1024, times=5, bn=8, num_block=2, num_thread=8)

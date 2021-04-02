@@ -32,24 +32,6 @@ namespace tvm {
 namespace runtime {
 
 /*!
- * \brief Load Load module from file
-          This function will automatically call
-          cc.create_shared if the path is in format .o or .tar
-          High level handling for .o and .tar file.
-          We support this to be consistent with RPC module load.
- * \param file The input file
- * \param file The format of file
- * \return Module The loaded module
- */
-Module Load(std::string* path, const std::string& fmt = "");
-
-/*!
- * \brief CleanDir Removes the files from the directory
- * \param dirname THe name of the directory
- */
-void CleanDir(const std::string& dirname);
-
-/*!
  * \brief RPCEnv The RPC Environment parameters for c++ rpc server
  */
 struct RPCEnv {
@@ -57,7 +39,7 @@ struct RPCEnv {
   /*!
    * \brief Constructor Init The RPC Environment initialize function
    */
-  RPCEnv();
+  RPCEnv(const std::string& word_dir = "");
   /*!
    * \brief GetPath To get the workpath from packed function
    * \param name The file name

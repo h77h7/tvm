@@ -32,19 +32,22 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <utility>
 #include <vector>
 
-#include "serialize_util.h"
+#include "../file_utils.h"
+#include "../library_module.h"
+#include "serialize_utils.h"
 
 namespace tvm {
 namespace runtime {
 namespace vm {
 
-#define STREAM_CHECK(val, section)                                         \
-  CHECK(val) << "Invalid VM file format in the " << section << " section." \
-             << "\n";
+#define STREAM_CHECK(val, section)                                          \
+  ICHECK(val) << "Invalid VM file format in the " << section << " section." \
+              << "\n";
 
 // Helper to serialize a vm instruction.
 VMInstructionSerializer SerializeInstruction(const Instruction& instr);
@@ -72,6 +75,12 @@ PackedFunc Executable::GetFunction(const std::string& name, const ObjectPtr<Obje
       std::string func_name = args[0];
       int index = args[1];
       *rv = this->GetFunctionParameterName(func_name, index);
+    });
+  } else if (name == "vm_load_executable") {
+    return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+      auto vm = make_object<VirtualMachine>();
+      vm->LoadExecutable(this);
+      *rv = Module(vm);
     });
   } else {
     LOG(FATAL) << "Unknown packed function: " << name;
@@ -249,6 +258,9 @@ void Executable::SaveConstantSection(dmlc::Stream* strm) {
   for (const auto& it : arrays) {
     runtime::SaveDLTensor(strm, it);
   }
+
+  // Save the const to device mapping.
+  strm->Write(this->const_device_type);
 }
 
 void Executable::SavePrimitiveOpNames(dmlc::Stream* strm) {
@@ -351,6 +363,7 @@ VMInstructionSerializer SerializeInstruction(const Instruction& instr) {
       fields.push_back(dtype.code);
       fields.push_back(dtype.bits);
       fields.push_back(dtype.lanes);
+      fields.push_back(instr.alloc_storage.device_type);
       fields.push_back(instr.dst);
       break;
     }
@@ -428,6 +441,11 @@ VMInstructionSerializer SerializeInstruction(const Instruction& instr) {
       fields.assign({instr.reshape_tensor.tensor, instr.reshape_tensor.newshape, instr.dst});
       break;
     }
+    case Opcode::DeviceCopy: {
+      // Number of fields = 4
+      fields.assign({instr.src, instr.src_device_type, instr.dst_device_type, instr.dst});
+      break;
+    }
     default:
       LOG(FATAL) << "Invalid opcode" << static_cast<int>(instr.op);
       break;
@@ -442,7 +460,7 @@ void Executable::SaveCodeSection(dmlc::Stream* strm) {
   for (const auto& func : this->functions) {
     // Save the function info.
     VMFunctionSerializer func_format(func.name, func.register_file_size, func.instructions.size(),
-                                     func.params);
+                                     func.params, func.params_device_type);
     func_format.Save(strm);
 
     // Serialize each instruction.
@@ -465,9 +483,37 @@ void LoadHeader(dmlc::Stream* strm) {
   STREAM_CHECK(version == TVM_VERSION, "version");
 }
 
+runtime::Module Executable::GetLib() const {
+  ICHECK_LE(this->imports_.size(), 1)
+      << "The kernel library must be imported as the only module in an Executable";
+
+  if (this->imports().size() == 0) {
+    return Module(nullptr);
+  } else {
+    return this->imports_[0];
+  }
+}
+
+void Executable::SetLib(const runtime::Module& lib) {
+  ICHECK(lib.defined()) << "the provided library can not be null";
+
+  ICHECK_EQ(this->imports_.size(), 0)
+      << "A VMExecutable should never have more than one import inside an the executable, \n"
+      << "the first import should *always* be the library containing"
+      << "the platform specific kernel code";
+
+  this->Import(lib);
+}
+
 runtime::Module Executable::Load(const std::string& code, const runtime::Module lib) {
   auto exec = make_object<Executable>();
-  exec->lib = lib;
+
+  // Support null-initialization of lib, to enable initialization during
+  // deserialization before we have we have deserialized the imports.
+  if (lib.defined()) {
+    exec->SetLib(lib);
+  }
+
   exec->code_ = code;
   dmlc::MemoryStringStream strm(&exec->code_);
 
@@ -509,6 +555,12 @@ void Executable::LoadConstantSection(dmlc::Stream* strm) {
     STREAM_CHECK(constant.Load(strm), "constant");
     this->constants.push_back(constant);
   }
+
+  // Load the const to device mapping.
+  std::vector<Index> const_device_type;
+  STREAM_CHECK(strm->Read(&const_device_type), "constant");
+  ICHECK_EQ(size, const_device_type.size());
+  this->const_device_type = const_device_type;
 }
 
 void Executable::LoadPrimitiveOpNames(dmlc::Stream* strm) {
@@ -523,7 +575,7 @@ void Executable::LoadPrimitiveOpNames(dmlc::Stream* strm) {
 // `instr_fields`.
 inline std::vector<Index> ExtractFields(const std::vector<Index>& instr_fields, Index start,
                                         Index cnt) {
-  CHECK_LE(static_cast<size_t>(start + cnt), instr_fields.size());
+  ICHECK_LE(static_cast<size_t>(start + cnt), instr_fields.size());
   std::vector<Index> ret;
   for (auto i = start; i < start + cnt; i++) {
     ret.push_back(instr_fields[i]);
@@ -622,7 +674,8 @@ Instruction DeserializeInstruction(const VMInstructionSerializer& instr) {
       return Instruction::AllocClosure(clo_index, num_freevar, free_vars, dst);
     }
     case Opcode::AllocStorage: {
-      DCHECK_GE(instr.fields.size(), 6U);
+      // Number of fields = 7
+      DCHECK_GE(instr.fields.size(), 7U);
       Index allocation_size = instr.fields[0];
       Index alignment = instr.fields[1];
 
@@ -631,9 +684,10 @@ Instruction DeserializeInstruction(const VMInstructionSerializer& instr) {
       dtype.bits = instr.fields[3];
       dtype.lanes = instr.fields[4];
 
-      RegName dst = instr.fields[5];
+      Index device_type = instr.fields[5];
+      RegName dst = instr.fields[6];
 
-      return Instruction::AllocStorage(allocation_size, alignment, dtype, dst);
+      return Instruction::AllocStorage(allocation_size, alignment, dtype, device_type, dst);
     }
     case Opcode::If: {
       // Number of fields = 4
@@ -704,6 +758,12 @@ Instruction DeserializeInstruction(const VMInstructionSerializer& instr) {
       DCHECK_EQ(instr.fields.size(), 3U);
       return Instruction::ReshapeTensor(instr.fields[0], instr.fields[1], instr.fields[2]);
     }
+    case Opcode::DeviceCopy: {
+      // Number of fields = 4
+      DCHECK_EQ(instr.fields.size(), 4U);
+      return Instruction::DeviceCopy(instr.fields[0], instr.fields[1], instr.fields[2],
+                                     instr.fields[3]);
+    }
     default:
       LOG(FATAL) << "Invalid opcode" << instr.opcode;
       return Instruction();
@@ -733,25 +793,63 @@ void Executable::LoadCodeSection(dmlc::Stream* strm) {
 
     // Create the VM function.
     VMFunction vm_func = VMFunction(loaded_func.name, loaded_func.params, instructions,
-                                    loaded_func.register_file_size);
+                                    loaded_func.register_file_size, loaded_func.params_device_type);
     auto it = this->global_map.find(loaded_func.name);
-    CHECK(it != this->global_map.end());
-    CHECK_LE(it->second, this->global_map.size());
+    ICHECK(it != this->global_map.end());
+    ICHECK_LE(it->second, this->global_map.size());
     this->functions[it->second] = vm_func;
   }
 }
 
+void Executable::SaveToBinary(dmlc::Stream* stream) {
+  auto code_bytes = this->Save();
+  std::string code(code_bytes.data, code_bytes.size);
+  stream->Write(code);
+
+  ICHECK(this->imports()[0].defined()) << "the library must be imported before serialization";
+}
+
+Module ExecutableLoadBinary(void* strm) {
+  dmlc::Stream* stream = static_cast<dmlc::Stream*>(strm);
+  std::string code;
+  stream->Read(&code);
+  auto exec = Executable::Load(code, Module());
+  return exec;
+}
+
+void Executable::SaveToFile(const std::string& path, const std::string& format) {
+  std::string data;
+  dmlc::MemoryStringStream writer(&data);
+  dmlc::SeekStream* strm = &writer;
+  SaveToBinary(strm);
+  SaveBinaryToFile(path, data);
+}
+
+TVM_REGISTER_GLOBAL("runtime.module.loadbinary_VMExecutable").set_body_typed(ExecutableLoadBinary);
+
+// Load module from module.
+Module ExecutableLoadFile(const std::string& file_name, const std::string& format) {
+  std::string data;
+  LoadBinaryFromFile(file_name, &data);
+  dmlc::MemoryStringStream reader(&data);
+  dmlc::Stream* strm = &reader;
+  auto exec = ExecutableLoadBinary(reinterpret_cast<void*>(strm));
+  return exec;
+}
+
+TVM_REGISTER_GLOBAL("runtime.module.loadfile_VMExecutable").set_body_typed(ExecutableLoadFile);
+
 TVM_REGISTER_GLOBAL("runtime.GetNumOfGlobals").set_body([](TVMArgs args, TVMRetValue* rv) {
   runtime::Module mod = args[0];
   const auto* exec = dynamic_cast<Executable*>(mod.operator->());
-  CHECK(exec);
+  ICHECK(exec);
   *rv = static_cast<int>(exec->global_map.size());
 });
 
 TVM_REGISTER_GLOBAL("runtime.GetGlobalFields").set_body([](TVMArgs args, TVMRetValue* rv) {
   runtime::Module mod = args[0];
   const auto* exec = dynamic_cast<Executable*>(mod.operator->());
-  CHECK(exec);
+  ICHECK(exec);
   int idx = args[1];
   std::vector<std::pair<std::string, Index> > globals(exec->global_map.begin(),
                                                       exec->global_map.end());
@@ -759,24 +857,24 @@ TVM_REGISTER_GLOBAL("runtime.GetGlobalFields").set_body([](TVMArgs args, TVMRetV
     return a.second < b.second;
   };
   std::sort(globals.begin(), globals.end(), comp);
-  CHECK_LT(idx, globals.size());
+  ICHECK_LT(idx, globals.size());
   *rv = globals[idx].first;
 });
 
 TVM_REGISTER_GLOBAL("runtime.GetNumOfPrimitives").set_body([](TVMArgs args, TVMRetValue* rv) {
   runtime::Module mod = args[0];
   const auto* exec = dynamic_cast<Executable*>(mod.operator->());
-  CHECK(exec);
+  ICHECK(exec);
   *rv = static_cast<int>(exec->primitive_map.size());
 });
 
 TVM_REGISTER_GLOBAL("runtime.GetPrimitiveFields").set_body([](TVMArgs args, TVMRetValue* rv) {
   runtime::Module mod = args[0];
   const auto* exec = dynamic_cast<Executable*>(mod.operator->());
-  CHECK(exec);
+  ICHECK(exec);
   int idx = args[1];
-  CHECK_GE(idx, 0);
-  CHECK_LT(idx, exec->primitive_map.size());
+  ICHECK_GE(idx, 0);
+  ICHECK_LT(idx, exec->primitive_map.size());
 
   for (const auto& it : exec->primitive_map) {
     if (idx == static_cast<int>(it.second)) {

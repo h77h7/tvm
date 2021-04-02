@@ -17,7 +17,9 @@
 # pylint: disable=invalid-name
 """x86 declaration and schedules."""
 from tvm import te
-from ..util import is_empty_shape
+from tvm.tir import IntImm
+from ..utils import is_empty_shape
+
 
 def schedule_injective_from_existing(sch, out):
     """Schedule for injective op from existing schedule.
@@ -46,9 +48,16 @@ def schedule_injective_from_existing(sch, out):
     # Vectorize the inner most for loop. Tiling first to get a const extent
     if len(sch[out].op.axis) >= 1:
         l = sch[out].op.axis[-1]
-        _, li = sch[out].split(l, factor=16)
+        lo, li = sch[out].split(l, factor=16)
         sch[out].vectorize(li)
+
+        # for 1D loop, the above split will break the parallel axis
+        # Need to make the outer loop parallel again
+        if len(sch[out].op.axis) == 1:
+            sch[out].parallel(lo)
+
     return sch
+
 
 def schedule_injective(outs):
     """X86 schedule for injective op.
@@ -73,6 +82,7 @@ def schedule_injective(outs):
         schedule_injective_from_existing(s, x)
     return s
 
+
 def schedule_concatenate(outs):
     """X86 schedule for concatenate op.
 
@@ -87,21 +97,24 @@ def schedule_concatenate(outs):
     sch: Schedule
         The computation schedule for the op.
     """
+
     def vectorize(sch, tensor, vectorize_limit):
         """Internal vectorization function for concatenate."""
         inner_axis = s[tensor].op.axis[len(s[tensor].op.axis) - 1]
-        inner_length = tensor.shape[len(tensor.shape) - 1].value
-        if inner_length <= vectorize_limit:
-            sch[tensor].vectorize(inner_axis)
-        else:
-            split_factor = 1
-            for i in range(vectorize_limit, 1, -1):
-                if inner_length % i == 0:
-                    split_factor = i
-                    break
-            if split_factor > 1:
-                _, inner_i = sch[tensor].split(inner_axis, split_factor)
-                sch[tensor].vectorize(inner_i)
+        # Check that the tensor shape is static. Otherwise skip vectorization.
+        if isinstance(tensor.shape[len(tensor.shape) - 1], IntImm):
+            inner_length = tensor.shape[len(tensor.shape) - 1].value
+            if inner_length <= vectorize_limit:
+                sch[tensor].vectorize(inner_axis)
+            else:
+                split_factor = 1
+                for i in range(vectorize_limit, 1, -1):
+                    if inner_length % i == 0:
+                        split_factor = i
+                        break
+                if split_factor > 1:
+                    _, inner_i = sch[tensor].split(inner_axis, split_factor)
+                    sch[tensor].vectorize(inner_i)
 
     outs = [outs] if isinstance(outs, te.tensor.Tensor) else outs
     x = outs[0]
@@ -117,6 +130,7 @@ def schedule_concatenate(outs):
     else:
         s[x].parallel(s[x].op.axis[0])
     return s
+
 
 schedule_elemwise = schedule_injective
 schedule_broadcast = schedule_injective

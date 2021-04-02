@@ -25,6 +25,7 @@
 #ifndef TVM_RUNTIME_CRT_CRT_H_
 #define TVM_RUNTIME_CRT_CRT_H_
 
+#include <inttypes.h>
 #include <tvm/runtime/crt/error_codes.h>
 
 #ifdef __cplusplus
@@ -32,11 +33,13 @@ extern "C" {
 #endif
 
 /*!
- * \brief Initialize various data structures used by the rutnime.
- * \return An error code describing the outcome of intialization. Generally, initialization
+ * \brief Initialize various data structures used by the runtime.
+ * Prior to calling this, any initialization needed to support TVMPlatformMemory* functions should
+ * be completed.
+ * \return An error code describing the outcome of initialization. Generally, initialization
  *     is only expected to fail due to a misconfiguration.
  */
-tvm_crt_error_t TVMInitializeRuntime(void);
+tvm_crt_error_t TVMInitializeRuntime();
 
 #ifdef __cplusplus
 }  // extern "C"

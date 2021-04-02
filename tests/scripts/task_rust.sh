@@ -20,10 +20,13 @@ set -e
 set -u
 
 export TVM_HOME="$(git rev-parse --show-toplevel)"
-
+echo "Using TVM_HOME=$TVM_HOME"
 export LD_LIBRARY_PATH="$TVM_HOME/lib:$TVM_HOME/build:${LD_LIBRARY_PATH:-}"
-export PYTHONPATH="$TVM_HOME/python"
+echo "Using LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+export PYTHONPATH="$TVM_HOME/python:${PYTHONPATH}"
+echo "Using PYTHONPATH=$PYTHONPATH"
 export RUST_DIR="$TVM_HOME/rust"
+echo "Using RUST_DIR=$RUST_DIR"
 
 
 export LLVM_CONFIG_DEFAULT=`which llvm-config-10`
@@ -55,14 +58,14 @@ cd $RUST_DIR/tvm-rt
 cargo build
 cargo test --tests
 
-# Next we test the graph runtime crate.
+# Next we test the graph executor crate.
 cd $RUST_DIR/tvm-graph-rt
 
 # We first we compile a model using the Python bindings then run the tests.
 python3 tests/build_model.py
 cargo test --tests
 
-# Run some more tests involving the graph runtime API.
+# Run some more tests involving the graph executor API.
 cd tests/test_tvm_basic
 cargo run
 cd -
@@ -71,7 +74,7 @@ cd tests/test_tvm_dso
 cargo run
 cd -
 
-# # run wasm32 test
+# run wasm32 test
 # cd tests/test_wasm32
 # cargo build
 # wasmtime $RUST_DIR/target/wasm32-wasi/debug/test-wasm32.wasm
@@ -108,5 +111,5 @@ cargo run --bin string
 cd -
 
 cd examples/resnet
-cargo build
+cargo run
 cd -

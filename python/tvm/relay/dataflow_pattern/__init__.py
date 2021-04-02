@@ -39,14 +39,12 @@ def register_df_node(type_key=None):
         The type key of the node.
     """
     if not isinstance(type_key, str):
-        return tvm._ffi.register_object(
-            "relay.dataflow_pattern." + type_key.__name__)(type_key)
+        return tvm._ffi.register_object("relay.dataflow_pattern." + type_key.__name__)(type_key)
     return tvm._ffi.register_object(type_key)
 
 
 class DFPattern(Node):
-    """Base class of all Patterns.
-    """
+    """Base class of all Patterns."""
 
     def __call__(self, *args):
         return CallPattern(self, list(args))
@@ -146,12 +144,14 @@ class DFPattern(Node):
         """
         return match(self, expr)
 
-    def partition(self,
-                  expr: Expr,
-                  attrs: Optional[Dict[str, Object]] = None,
-                  check: Callable[[Expr], bool] = lambda x: True) -> Expr:
+    def partition(
+        self,
+        expr: Expr,
+        attrs: Optional[Dict[str, Object]] = None,
+        check: Callable[[Expr], bool] = lambda x: True,
+    ) -> Expr:
         """
-        Parition the expression into functions defined by this pattern
+        Partition the expression into functions defined by this pattern
 
         Parameters
         ----------
@@ -312,6 +312,52 @@ def is_tuple_get_item(tuple_value: "DFPattern", index: Optional[int] = None) -> 
         The resulting pattern.
     """
     return TupleGetItemPattern(tuple_value, index)
+
+
+def is_if(cond, true_branch, false_branch):
+    """
+    Syntatic sugar for creating an IfPattern.
+
+    Parameters
+    ----------
+    cond: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the condition of If.
+
+    true_branch: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the true branch of If.
+
+    false_branch: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the false branch of If.
+
+    Returns
+    -------
+    result: tvm.relay.dataflow_pattern.DFPattern
+        The resulting pattern.
+    """
+    return IfPattern(cond, true_branch, false_branch)
+
+
+def is_let(var, value, body):
+    """
+    Syntatic sugar for creating a LetPattern.
+
+    Parameters
+    ----------
+    var: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the variable of Let.
+
+    value: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the value of Let.
+
+    body: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the body where the binding is in effect.
+
+    Returns
+    -------
+    result: tvm.relay.dataflow_pattern.DFPattern
+        The resulting pattern.
+    """
+    return LetPattern(var, value, body)
 
 
 def wildcard() -> "DFPattern":
@@ -480,14 +526,14 @@ class VarPattern(DFPattern):
         The type annotation on the variable.
     """
 
-    def __init__(self, name_hint: str = "", type_annotation: Optional[tvm.ir.type.Type] = None):
-        self.__init_handle_by_constructor__(ffi.VarPattern, name_hint, type_annotation)
+    def __init__(self, name_hint: str = ""):
+        self.__init_handle_by_constructor__(ffi.VarPattern, name_hint)
 
 
 @register_df_node
 class ConstantPattern(DFPattern):
-    """A pattern matching a Relay Constant.
-    """
+    """A pattern matching a Relay Constant."""
+
     def __init__(self):
         self.__init_handle_by_constructor__(ffi.ConstantPattern)
 
@@ -504,22 +550,77 @@ class CallPattern(DFPattern):
     args: List[realy.dataflow_pattern.DFPattern]
         The arguments to the call.
 
-    attrs: Optional[tvm.ir.attrs.Attrs]
-        Attributes to the call, can be None
-
-    type_args: Optional[List[tvm.ir.type.Type]]
-        The additional type arguments, this is only
-        used in advanced usecase of template functions.
     """
 
-    def __init__(self,
-                 op: "DFPattern",
-                 args: List["DFPattern"],
-                 attrs: Optional[tvm.ir.attrs.Attrs] = None,
-                 type_args: Optional[List[tvm.ir.type.Type]] = None):
-        if not type_args:
-            type_args = []
-        self.__init_handle_by_constructor__(ffi.CallPattern, op, args, attrs, type_args)
+    def __init__(
+        self,
+        op: "DFPattern",
+        args: List["DFPattern"],
+    ):
+        self.__init_handle_by_constructor__(ffi.CallPattern, op, args)
+
+
+@register_df_node
+class FunctionPattern(DFPattern):
+    """A pattern matching a function node in Relay.
+
+    Parameters
+    ----------
+    params: List[realy.dataflow_pattern.DFPattern]
+        The parameters to the Function.
+
+    body: realy.dataflow_pattern.DFPattern
+        The body fo the Function
+
+    """
+
+    def __init__(
+        self,
+        params: List["DFPattern"],
+        body: "DFPattern",
+    ):
+        self.__init_handle_by_constructor__(ffi.FunctionPattern, params, body)
+
+
+@register_df_node
+class IfPattern(DFPattern):
+    """A patern matching a Relay If.
+
+    Parameters
+    ----------
+    cond: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the condition of If.
+
+    true_branch: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the true branch of If.
+
+    false_branch: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the false branch of If.
+    """
+
+    def __init__(self, cond: "DFPattern", true_branch: "DFPattern", false_branch: "DFPattern"):
+        self.__init_handle_by_constructor__(ffi.IfPattern, cond, true_branch, false_branch)
+
+
+@register_df_node
+class LetPattern(DFPattern):
+    """A patern matching a Relay Let.
+
+    Parameters
+    ----------
+    var: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the variable of Let.
+
+    value: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the value of Let.
+
+    body: tvm.relay.dataflow_pattern.DFPattern
+        The pattern describing the body where the binding is in effect.
+
+    """
+
+    def __init__(self, var: "DFPattern", value: "DFPattern", body: "DFPattern"):
+        self.__init_handle_by_constructor__(ffi.LetPattern, var, value, body)
 
 
 @register_df_node
@@ -583,8 +684,7 @@ class AltPattern(DFPattern):
 
 @register_df_node
 class WildcardPattern(DFPattern):
-    """A pattern which matches anything.
-    """
+    """A pattern which matches anything."""
 
     def __init__(self):
         self.__init_handle_by_constructor__(ffi.WildcardPattern)
@@ -694,6 +794,7 @@ class DFPatternCallback:
     require_type: bool
         Whether InferType is required to be run before the callback.
     """
+
     def __init__(self, require_type=False):
         self.pattern = None
         self.require_type = require_type
@@ -734,8 +835,10 @@ class DFPatternCallback:
         """
         raise "Unimplemented"
 
+
 class _DFPatternCallback(Object):
     """C++ implemenation"""
+
     def __init__(self, pattern, callback, require_type):
         self.__init_handle_by_constructor__(ffi.DFPatternCallback, pattern, callback, require_type)
 
@@ -769,10 +872,12 @@ def rewrite(callbacks, expr: Expr, mod: Optional[_ir.IRModule] = None) -> Expr:
     return ffi.rewrite(tmp, expr, mod)
 
 
-def partition(pattern: "DFPattern",
-              expr: Expr,
-              attrs: Optional[Dict[str, Object]] = None,
-              check: Callable[[Expr], bool] = lambda x: True) -> Expr:
+def partition(
+    pattern: "DFPattern",
+    expr: Expr,
+    attrs: Optional[Dict[str, Object]] = None,
+    check: Callable[[Expr], bool] = lambda x: True,
+) -> Expr:
     """
     Parition the expression into a series of functions that match the pattern
 

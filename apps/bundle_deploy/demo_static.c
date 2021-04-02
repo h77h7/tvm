@@ -24,9 +24,13 @@
 #include <sys/time.h>
 #include <tvm/runtime/c_runtime_api.h>
 
-#include "build/graph_c.json.c"
-#include "build/params_c.bin.c"
 #include "bundle.h"
+
+extern const char build_graph_c_json[];
+extern unsigned int build_graph_c_json_len;
+
+extern const char build_params_c_bin[];
+extern unsigned int build_params_c_bin_len;
 
 #define OUTPUT_LEN 1000
 
@@ -50,8 +54,8 @@ int main(int argc, char** argv) {
 
   DLTensor input;
   input.data = input_storage;
-  DLContext ctx = {kDLCPU, 0};
-  input.ctx = ctx;
+  DLDevice dev = {kDLCPU, 0};
+  input.device = dev;
   input.ndim = 4;
   DLDataType dtype = {kDLFloat, 32, 1};
   input.dtype = dtype;
@@ -69,8 +73,8 @@ int main(int argc, char** argv) {
   float output_storage[OUTPUT_LEN];
   DLTensor output;
   output.data = output_storage;
-  DLContext out_ctx = {kDLCPU, 0};
-  output.ctx = out_ctx;
+  DLDevice out_dev = {kDLCPU, 0};
+  output.device = out_dev;
   output.ndim = 2;
   DLDataType out_dtype = {kDLFloat, 32, 1};
   output.dtype = out_dtype;

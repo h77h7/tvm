@@ -25,6 +25,7 @@ Recurrent computing is a typical pattern in neural networks.
 from __future__ import absolute_import, print_function
 
 import tvm
+import tvm.testing
 from tvm import te
 import numpy as np
 
@@ -52,7 +53,7 @@ n = te.var("n")
 X = te.placeholder((m, n), name="X")
 s_state = te.placeholder((m, n))
 s_init = te.compute((1, n), lambda _, i: X[0, i])
-s_update = te.compute((m, n), lambda t, i: s_state[t-1, i] + X[t, i])
+s_update = te.compute((m, n), lambda t, i: s_state[t - 1, i] + X[t, i])
 s_scan = tvm.te.scan(s_init, s_update, s_state, inputs=[X])
 
 ######################################################################
@@ -82,12 +83,12 @@ print(tvm.lower(s, [X, s_scan], simple_mode=True))
 # numpy to verify the correctness of the result.
 #
 fscan = tvm.build(s, [X, s_scan], "cuda", name="myscan")
-ctx = tvm.gpu(0)
+dev = tvm.gpu(0)
 n = 1024
 m = 10
 a_np = np.random.uniform(size=(m, n)).astype(s_scan.dtype)
-a = tvm.nd.array(a_np, ctx)
-b = tvm.nd.array(np.zeros((m, n), dtype=s_scan.dtype), ctx)
+a = tvm.nd.array(a_np, dev)
+b = tvm.nd.array(np.zeros((m, n), dtype=s_scan.dtype), dev)
 fscan(a, b)
 tvm.testing.assert_allclose(b.asnumpy(), np.cumsum(a_np, axis=0))
 
@@ -106,7 +107,7 @@ n = te.var("n")
 X = te.placeholder((m, n), name="X")
 s_state = te.placeholder((m, n))
 s_init = te.compute((1, n), lambda _, i: X[0, i])
-s_update_s1 = te.compute((m, n), lambda t, i: s_state[t-1, i] * 2, name="s1")
+s_update_s1 = te.compute((m, n), lambda t, i: s_state[t - 1, i] * 2, name="s1")
 s_update_s2 = te.compute((m, n), lambda t, i: s_update_s1[t, i] + X[t, i], name="s2")
 s_scan = tvm.te.scan(s_init, s_update_s2, s_state, inputs=[X])
 
@@ -135,11 +136,11 @@ s_state1 = te.placeholder((m, n))
 s_state2 = te.placeholder((m, l))
 s_init1 = te.compute((1, n), lambda _, i: X[0, i])
 s_init2 = te.compute((1, l), lambda _, i: 0.0)
-s_update1 = te.compute((m, n), lambda t, i: s_state1[t-1, i] + X[t, i])
-s_update2 = te.compute((m, l), lambda t, i: s_state2[t-1, i] + s_state1[t-1, 0])
-s_scan1, s_scan2 = tvm.te.scan([s_init1, s_init2],
-                            [s_update1, s_update2],
-                            [s_state1, s_state2], inputs=[X])
+s_update1 = te.compute((m, n), lambda t, i: s_state1[t - 1, i] + X[t, i])
+s_update2 = te.compute((m, l), lambda t, i: s_state2[t - 1, i] + s_state1[t - 1, 0])
+s_scan1, s_scan2 = tvm.te.scan(
+    [s_init1, s_init2], [s_update1, s_update2], [s_state1, s_state2], inputs=[X]
+)
 s = te.create_schedule(s_scan1.op)
 print(tvm.lower(s, [X, s_scan1, s_scan2], simple_mode=True))
 

@@ -74,6 +74,7 @@ class RelayTextPrinter : public ExprFunctor<Doc(const Expr&)>,
   Doc PrintFinal(const ObjectRef& node);
   std::vector<Doc> PrintCallAttrs(const Attrs& attrs, const Expr& op);
   std::vector<Doc> PrintFuncAttrs(const Attrs& attrs);
+  Doc PrintSpan(const Span& span);
 
   Doc Print(const ObjectRef& node, bool meta = false, bool try_inline = false);
 
@@ -108,7 +109,7 @@ class RelayTextPrinter : public ExprFunctor<Doc(const Expr&)>,
   //------------------------------------
   // Overload of Expr printing functions
   //------------------------------------
-  Doc PrintExpr(const Expr& expr, bool meta, bool try_inline);
+  Doc PrintExpr(const Expr& expr, bool meta, bool try_inline, bool optional_info = true);
   // Should only be triggered when op is a free variable being visited for the
   // first time.
   Doc VisitExpr_(const VarNode* op) final;
@@ -307,7 +308,9 @@ class TIRTextPrinter : public StmtFunctor<Doc(const Stmt&)>,
   Doc VisitStmt_(const SeqStmtNode* op) override;
   Doc VisitStmt_(const EvaluateNode* op) override;
   Doc VisitStmt_(const ForNode* op) override;
+  Doc VisitStmt_(const WhileNode* op) override;
   Doc VisitStmt_(const PrefetchNode* op) override;
+  Doc VisitStmt_(const BlockRealizeNode* op) override;
   Doc VisitStmtDefault_(const Object* op) override;
 
   Doc VisitType_(const PrimTypeNode* node) override;
@@ -322,6 +325,7 @@ class TIRTextPrinter : public StmtFunctor<Doc(const Stmt&)>,
   Doc PrintBuffer(const BufferNode* op);
   Doc BufferNode2Doc(const BufferNode* op, Doc doc);
   Doc PrintString(const StringObj* op) { return Doc::StrLiteral(op->data); }
+  Doc PrintBufferRegion(const BufferRegionNode* op);
 
   /*!
    * \brief special method to print out data type

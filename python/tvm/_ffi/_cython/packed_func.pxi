@@ -20,10 +20,10 @@ import traceback
 from cpython cimport Py_INCREF, Py_DECREF
 from numbers import Number, Integral
 from ..base import string_types, py2cerror
-from ..runtime_ctypes import DataType, TVMContext, TVMByteArray, ObjectRValueRef
+from ..runtime_ctypes import DataType, Device, TVMByteArray, ObjectRValueRef
 
 
-cdef void tvm_callback_finalize(void* fhandle):
+cdef void tvm_callback_finalize(void* fhandle) with gil:
     local_pyfunc = <object>(fhandle)
     Py_DECREF(local_pyfunc)
 
@@ -43,6 +43,7 @@ cdef int tvm_callback(TVMValue* args,
         if (tcode == kTVMObjectHandle or
             tcode == kTVMPackedFuncHandle or
             tcode == kTVMModuleHandle or
+            tcode == kTVMNDArrayHandle or
             tcode == kTVMObjectRefArg or
             tcode > kTVMExtBegin):
             CALL(TVMCbArgToReturn(&value, &tcode))
@@ -138,10 +139,10 @@ cdef inline int make_arg(object arg,
         value[0].v_str = tstr
         tcode[0] = kTVMStr
         temp_args.append(tstr)
-    elif isinstance(arg, TVMContext):
-        value[0].v_ctx = (<DLContext*>(
+    elif isinstance(arg, Device):
+        value[0].v_device = (<DLDevice*>(
             <unsigned long long>ctypes.addressof(arg)))[0]
-        tcode[0] = kTVMContext
+        tcode[0] = kDLDevice
     elif isinstance(arg, (bytes, bytearray)):
         # from_buffer only taeks in bytearray.
         if isinstance(arg, bytes):
@@ -219,8 +220,8 @@ cdef inline object make_ret(TVMValue value, int tcode):
         return make_ret_bytes(value.v_handle)
     elif tcode == kTVMOpaqueHandle:
         return ctypes_handle(value.v_handle)
-    elif tcode == kTVMContext:
-        return TVMContext(value.v_ctx.device_type, value.v_ctx.device_id)
+    elif tcode == kDLDevice:
+        return Device(value.v_device.device_type, value.v_device.device_id)
     elif tcode == kTVMModuleHandle:
         return _CLASS_MODULE(ctypes_handle(value.v_handle))
     elif tcode == kTVMPackedFuncHandle:

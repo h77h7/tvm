@@ -23,8 +23,8 @@
 #ifndef TVM_RUNTIME_OBJECT_H_
 #define TVM_RUNTIME_OBJECT_H_
 
-#include <dmlc/logging.h>
 #include <tvm/runtime/c_runtime_api.h>
+#include <tvm/runtime/logging.h>
 
 #include <string>
 #include <type_traits>
@@ -133,7 +133,7 @@ struct TypeIndex {
  *    TVM_DECLARE_BASE_OBJECT_INFO(BaseObj, Object);
  *  };
  *
- *  class ObjLeaf : public ObjBase {
+ *  class LeafObj : public BaseObj {
  *   public:
  *    // fields
  *    int child_field0;
@@ -144,8 +144,8 @@ struct TypeIndex {
  *  };
  *
  *  // The following code should be put into a cc file.
- *  TVM_REGISTER_OBJECT_TYPE(ObjBase);
- *  TVM_REGISTER_OBJECT_TYPE(ObjLeaf);
+ *  TVM_REGISTER_OBJECT_TYPE(BaseObj);
+ *  TVM_REGISTER_OBJECT_TYPE(LeafObj);
  *
  *  // Usage example.
  *  void TestObjects() {
@@ -153,14 +153,14 @@ struct TypeIndex {
  *    ObjectRef leaf_ref(make_object<LeafObj>());
  *    // cast to a specific instance
  *    const LeafObj* leaf_ptr = leaf_ref.as<LeafObj>();
- *    CHECK(leaf_ptr != nullptr);
+ *    ICHECK(leaf_ptr != nullptr);
  *    // can also cast to the base class.
- *    CHECK(leaf_ref.as<BaseObj>() != nullptr);
+ *    ICHECK(leaf_ref.as<BaseObj>() != nullptr);
  *  }
  *
  * \endcode
  */
-class Object {
+class TVM_DLL Object {
  public:
   /*!
    * \brief Object deleter
@@ -185,25 +185,29 @@ class Object {
    */
   template <typename TargetType>
   inline bool IsInstance() const;
-
+  /*!
+   * \return Whether the cell has only one reference
+   * \note We use stl style naming to be consistent with known API in shared_ptr.
+   */
+  inline bool unique() const;
   /*!
    * \brief Get the type key of the corresponding index from runtime.
    * \param tindex The type index.
    * \return the result.
    */
-  TVM_DLL static std::string TypeIndex2Key(uint32_t tindex);
+  static std::string TypeIndex2Key(uint32_t tindex);
   /*!
    * \brief Get the type key hash of the corresponding index from runtime.
    * \param tindex The type index.
    * \return the related key-hash.
    */
-  TVM_DLL static size_t TypeIndex2KeyHash(uint32_t tindex);
+  static size_t TypeIndex2KeyHash(uint32_t tindex);
   /*!
    * \brief Get the type index of the corresponding key from runtime.
    * \param key The type key.
    * \return the result.
    */
-  TVM_DLL static uint32_t TypeKey2Index(const std::string& key);
+  static uint32_t TypeKey2Index(const std::string& key);
 
 #if TVM_OBJECT_ATOMIC_REF_COUNTER
   using RefCounterType = std::atomic<int32_t>;
@@ -281,10 +285,9 @@ class Object {
    * \param type_child_slots_can_overflow Whether to allow child to overflow the slots.
    * \return The allocated type index.
    */
-  TVM_DLL static uint32_t GetOrAllocRuntimeTypeIndex(const std::string& key, uint32_t static_tindex,
-                                                     uint32_t parent_tindex,
-                                                     uint32_t type_child_slots,
-                                                     bool type_child_slots_can_overflow);
+  static uint32_t GetOrAllocRuntimeTypeIndex(const std::string& key, uint32_t static_tindex,
+                                             uint32_t parent_tindex, uint32_t type_child_slots,
+                                             bool type_child_slots_can_overflow);
 
   // reference counter related operations
   /*! \brief developer function, increases reference counter. */
@@ -306,7 +309,7 @@ class Object {
    * \param parent_tindex The parent type index.
    * \return The derivation results.
    */
-  TVM_DLL bool DerivedFrom(uint32_t parent_tindex) const;
+  bool DerivedFrom(uint32_t parent_tindex) const;
   // friend classes
   template <typename>
   friend class ObjAllocatorBase;
@@ -334,7 +337,7 @@ inline RelayRefType GetRef(const ObjectType* ptr);
 /*!
  * \brief Downcast a base reference type to a more specific type.
  *
- * \param ref The inptut reference
+ * \param ref The input reference
  * \return The corresponding SubRef.
  * \tparam SubRef The target specific reference type.
  * \tparam BaseRef the current reference type.
@@ -413,7 +416,7 @@ class ObjectPtr {
     return *get();
   }
   /*!
-   * \brief copy assignmemt
+   * \brief copy assignment
    * \param other The value to be assigned.
    * \return reference to self.
    */
@@ -424,7 +427,7 @@ class ObjectPtr {
     return *this;
   }
   /*!
-   * \brief move assignmemt
+   * \brief move assignment
    * \param other The value to be assigned.
    * \return reference to self.
    */
@@ -629,12 +632,12 @@ struct ObjectPtrEqual {
 };
 
 /*!
- * \brief helper macro to declare a base object type that can be inheritated.
+ * \brief helper macro to declare a base object type that can be inherited.
  * \param TypeName The name of the current type.
  * \param ParentType The name of the ParentType
  */
 #define TVM_DECLARE_BASE_OBJECT_INFO(TypeName, ParentType)                                     \
-  static_assert(!ParentType::_type_final, "ParentObj maked as final");                         \
+  static_assert(!ParentType::_type_final, "ParentObj marked as final");                        \
   static uint32_t RuntimeTypeIndex() {                                                         \
     static_assert(TypeName::_type_child_slots == 0 || ParentType::_type_child_slots == 0 ||    \
                       TypeName::_type_child_slots < ParentType::_type_child_slots,             \
@@ -645,10 +648,10 @@ struct ObjectPtrEqual {
     return _GetOrAllocRuntimeTypeIndex();                                                      \
   }                                                                                            \
   static uint32_t _GetOrAllocRuntimeTypeIndex() {                                              \
-    static uint32_t tidx = Object::GetOrAllocRuntimeTypeIndex(                                 \
+    static uint32_t tindex = Object::GetOrAllocRuntimeTypeIndex(                               \
         TypeName::_type_key, TypeName::_type_index, ParentType::_GetOrAllocRuntimeTypeIndex(), \
         TypeName::_type_child_slots, TypeName::_type_child_slots_can_overflow);                \
-    return tidx;                                                                               \
+    return tindex;                                                                             \
   }
 
 /*!
@@ -661,7 +664,7 @@ struct ObjectPtrEqual {
   static const constexpr int _type_child_slots = 0;         \
   TVM_DECLARE_BASE_OBJECT_INFO(TypeName, ParentType)
 
-/*! \brief helper macro to supress unused warning */
+/*! \brief helper macro to suppress unused warning */
 #if defined(__GNUC__)
 #define TVM_ATTRIBUTE_UNUSED __attribute__((unused))
 #else
@@ -683,7 +686,7 @@ struct ObjectPtrEqual {
   TVM_STR_CONCAT(TVM_OBJECT_REG_VAR_DEF, __COUNTER__) = TypeName::_GetOrAllocRuntimeTypeIndex()
 
 /*
- * \brief Define the default copy/move constructor and assign opeator
+ * \brief Define the default copy/move constructor and assign operator
  * \param TypeName The class typename.
  */
 #define TVM_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName) \
@@ -757,7 +760,7 @@ struct ObjectPtrEqual {
  */
 #define TVM_DEFINE_OBJECT_REF_COW_METHOD(ObjectName)     \
   ObjectName* CopyOnWrite() {                            \
-    CHECK(data_ != nullptr);                             \
+    ICHECK(data_ != nullptr);                            \
     if (!data_.unique()) {                               \
       auto n = make_object<ObjectName>(*(operator->())); \
       ObjectPtr<Object>(std::move(n)).swap(data_);       \
@@ -824,13 +827,15 @@ inline bool Object::IsInstance() const {
       if (!TargetType::_type_child_slots_can_overflow) return false;
       // Invariance: parent index is always smaller than the child.
       if (self->type_index_ < TargetType::RuntimeTypeIndex()) return false;
-      // The rare slower-path, check type hierachy.
+      // The rare slower-path, check type hierarchy.
       return self->DerivedFrom(TargetType::RuntimeTypeIndex());
     }
   } else {
     return false;
   }
 }
+
+inline bool Object::unique() const { return use_count() == 1; }
 
 template <typename ObjectType>
 inline const ObjectType* ObjectRef::as() const {
@@ -846,7 +851,7 @@ inline RefType GetRef(const ObjType* ptr) {
   static_assert(std::is_base_of<typename RefType::ContainerType, ObjType>::value,
                 "Can only cast to the ref of same container type");
   if (!RefType::_type_is_nullable) {
-    CHECK(ptr != nullptr);
+    ICHECK(ptr != nullptr);
   }
   return RefType(ObjectPtr<Object>(const_cast<Object*>(static_cast<const Object*>(ptr))));
 }
@@ -861,12 +866,12 @@ inline ObjectPtr<BaseType> GetObjectPtr(ObjType* ptr) {
 template <typename SubRef, typename BaseRef>
 inline SubRef Downcast(BaseRef ref) {
   if (ref.defined()) {
-    CHECK(ref->template IsInstance<typename SubRef::ContainerType>())
+    ICHECK(ref->template IsInstance<typename SubRef::ContainerType>())
         << "Downcast from " << ref->GetTypeKey() << " to " << SubRef::ContainerType::_type_key
         << " failed.";
   } else {
-    CHECK(SubRef::_type_is_nullable) << "Downcast from nullptr to not nullable reference of "
-                                     << SubRef::ContainerType::_type_key;
+    ICHECK(SubRef::_type_is_nullable) << "Downcast from nullptr to not nullable reference of "
+                                      << SubRef::ContainerType::_type_key;
   }
   return SubRef(std::move(ref.data_));
 }

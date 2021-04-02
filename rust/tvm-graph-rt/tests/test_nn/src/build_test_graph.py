@@ -23,33 +23,34 @@ import sys
 
 import numpy as np
 import tvm
-from tvm import te
+from tvm import te, runtime
 from tvm import relay
 from tvm.relay import testing
 
 
 def _get_model(dshape):
-    data = relay.var('data', shape=dshape)
-    fc = relay.nn.dense(data, relay.var("dense_weight"), units=dshape[-1]*2)
+    data = relay.var("data", shape=dshape)
+    fc = relay.nn.dense(data, relay.var("dense_weight"), units=dshape[-1] * 2)
     fc = relay.nn.bias_add(fc, relay.var("dense_bias"))
     left, right = relay.split(fc, indices_or_sections=2, axis=1)
     one = relay.const(1, dtype="float32")
     return relay.Tuple([(left + one), (right - one), fc])
 
+
 def main():
     dshape = (4, 8)
     net = _get_model(dshape)
     mod, params = testing.create_workload(net)
-    graph, lib, params = relay.build(
-        mod, 'llvm --system-lib', params=params)
+    graph, lib, params = relay.build(mod, "llvm --system-lib", params=params)
 
     out_dir = sys.argv[1]
-    lib.save(osp.join(sys.argv[1], 'graph.o'))
-    with open(osp.join(out_dir, 'graph.json'), 'w') as f_resnet:
+    lib.save(osp.join(sys.argv[1], "graph.o"))
+    with open(osp.join(out_dir, "graph.json"), "w") as f_resnet:
         f_resnet.write(graph)
 
-    with open(osp.join(out_dir, 'graph.params'), 'wb') as f_params:
-        f_params.write(relay.save_param_dict(params))
+    with open(osp.join(out_dir, "graph.params"), "wb") as f_params:
+        f_params.write(runtime.save_param_dict(params))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

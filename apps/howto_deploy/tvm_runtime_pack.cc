@@ -39,7 +39,7 @@
  */
 #include "../../src/runtime/c_runtime_api.cc"
 #include "../../src/runtime/cpu_device_api.cc"
-#include "../../src/runtime/file_util.cc"
+#include "../../src/runtime/file_utils.cc"
 #include "../../src/runtime/library_module.cc"
 #include "../../src/runtime/module.cc"
 #include "../../src/runtime/ndarray.cc"
@@ -58,8 +58,9 @@
 #include "../../src/runtime/dso_library.cc"
 #include "../../src/runtime/system_library.cc"
 
-// Graph runtime
-#include "../../src/runtime/graph/graph_runtime.cc"
+// Graph executor
+#include "../../src/runtime/graph_executor/graph_executor.cc"
+#include "../../src/runtime/graph_executor/graph_executor_factory.cc"
 
 // Uncomment the following lines to enable RPC
 // #include "../../src/runtime/rpc/rpc_session.cc"

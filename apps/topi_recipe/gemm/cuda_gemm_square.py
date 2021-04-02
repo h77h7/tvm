@@ -21,18 +21,22 @@ import os
 from tvm.contrib import nvcc
 from tvm.contrib import spirv
 import numpy as np
+import tvm.testing
 
-TASK="gemm"
+TASK = "gemm"
 USE_MANUAL_CODE = False
+
 
 @tvm.register_func
 def tvm_callback_cuda_compile(code):
-    ptx =  nvcc.compile_cuda(code, target="ptx")
+    ptx = nvcc.compile_cuda(code, target="ptx")
     return ptx
+
 
 def write_code(code, fname):
     with open(fname, "w") as f:
         f.write(code)
+
 
 @tvm.register_func
 def tvm_callback_cuda_postproc(code):
@@ -47,16 +51,13 @@ def tvm_callback_cuda_postproc(code):
 def test_gemm():
     # graph
     nn = 2048
-    n = te.var('n')
+    n = te.var("n")
     n = tvm.runtime.convert(nn)
     m, l = n, n
-    A = te.placeholder((l, n), name='A')
-    B = te.placeholder((l, m), name='B')
-    k = te.reduce_axis((0, l), name='k')
-    C = te.compute(
-        (m, n),
-        lambda ii, jj: te.sum(A[k, jj] * B[k, ii], axis=k),
-        name='C')
+    A = te.placeholder((l, n), name="A")
+    B = te.placeholder((l, m), name="B")
+    k = te.reduce_axis((0, l), name="k")
+    C = te.compute((m, n), lambda ii, jj: te.sum(A[k, jj] * B[k, ii], axis=k), name="C")
 
     # schedule
     s = te.create_schedule(C.op)
@@ -120,8 +121,8 @@ def test_gemm():
     s[BB].double_buffer()
     # correctness
     def check_device(device):
-        ctx = tvm.context(device, 0)
-        if not ctx.exist:
+        dev = tvm.device(device, 0)
+        if not dev.exist:
             print("Skip because %s is not enabled" % device)
             return
         print("Device %s" % device)
@@ -130,27 +131,26 @@ def test_gemm():
         n, m, l = nn, nn, nn
         a_np = np.random.uniform(size=(n, l)).astype(A.dtype)
         b_np = np.random.uniform(size=(m, l)).astype(B.dtype)
-        a = tvm.nd.array(a_np, ctx)
-        b = tvm.nd.array(b_np, ctx)
-        c = tvm.nd.array(np.zeros((n, m), dtype=C.dtype), ctx)
+        a = tvm.nd.array(a_np, dev)
+        b = tvm.nd.array(b_np, dev)
+        c = tvm.nd.array(np.zeros((n, m), dtype=C.dtype), dev)
         for i in range(2):
             f(a, b, c)
-        tvm.testing.assert_allclose(
-            c.asnumpy(), np.dot(b_np.T, a_np), rtol=1e-5)
+        tvm.testing.assert_allclose(c.asnumpy(), np.dot(b_np.T, a_np), rtol=1e-5)
 
         num_flops = 2 * nn * nn * nn
         num_runs = 10
-        timer_f = f.time_evaluator(f.entry_name, ctx, number=num_runs)
+        timer_f = f.time_evaluator(f.entry_name, dev, number=num_runs)
         t = timer_f(a, b, c).mean
         GFLOPS = num_flops / (t * 1e3) / 1e6
         print("average time cost of %d runs = %g ms, %g GFLOPS." % (num_runs, t * 1e3, GFLOPS))
 
     for device in ["cuda", "opencl", "rocm", "nvptx", "vulkan"]:
-        with tvm.transform.PassContext(config={"tir.UnrollLoop": {
-            "auto_max_step": 128,
-            "explicit_unroll": device != "cuda"
-        }}):
+        with tvm.transform.PassContext(
+            config={"tir.UnrollLoop": {"auto_max_step": 128, "explicit_unroll": device != "cuda"}}
+        ):
             check_device(device)
+
 
 if __name__ == "__main__":
     test_gemm()

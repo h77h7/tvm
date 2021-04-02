@@ -28,7 +28,7 @@ set(EXTRA_CXX_FLAGS
   "-O2"
   "-Wno-format"
   "-mhvx -mhvx-length=128b"
-  "-mv60"
+  "-mv65"
   "-stdlib=libc++"
 )
 
@@ -56,6 +56,8 @@ target_include_directories(sim_dev
   PUBLIC "."
   PUBLIC ".."
   PUBLIC "../../../../../include"
+)
+target_include_directories(sim_dev SYSTEM
   PUBLIC "../../../../../3rdparty/dlpack/include"
 )
 
