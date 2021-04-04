@@ -134,16 +134,14 @@ void fetch(
   volatile insn_T *insns,
   hls::stream<insn_T> &load_queue,
   hls::stream<insn_T> &gemm_queue,
-  hls::stream<insn_T> &store_queue,
-  /*4-stage pipeline*/
-  hls::stream<insn_T> &alu_queue) {
+  hls::stream<insn_T> &compute_queue,
+  hls::stream<insn_T> &store_queue) {
 PRAGMA_HLS(HLS INTERFACE s_axilite port = insn_count bundle = CONTROL_BUS offset = VTA_FETCH_INSN_COUNT_OFFSET)
-#pragma HLS INTERFACE m_axi depth=1024 port = insns offset = slave bundle = ins_port
+#pragma HLS INTERFACE m_axi port = insns offset = slave bundle = ins_port
 #pragma HLS INTERFACE axis port = load_queue
 #pragma HLS INTERFACE axis port = gemm_queue
+#pragma HLS INTERFACE axis port = compute_queue
 #pragma HLS INTERFACE axis port = store_queue
-/*4-stage pipeline*/
-#pragma HLS INTERFACE axis port = alu_queue
 #pragma HLS INTERFACE s_axilite port = return bundle = CONTROL_BUS
 
   INSN_DECODE: for (int pc = 0; pc < insn_count; pc++) {
@@ -162,15 +160,12 @@ PRAGMA_HLS(HLS INTERFACE s_axilite port = insn_count bundle = CONTROL_BUS offset
       if (memory_type == VTA_MEM_ID_INP || memory_type == VTA_MEM_ID_WGT) {
         load_queue.write(raw_insn);
       } else {
-        gemm_queue.write(raw_insn);
+        compute_queue.write(raw_insn);
       }
-    } 
-    /*4-stage pipeline*/
-    else if (opcode == VTA_OPCODE_ALU) {
-        alu_queue.write(raw_insn);
-    }
-    else {
+    } else if (opcode == VTA_OPCODE_GEMM) {
       gemm_queue.write(raw_insn);
+    } else {
+      compute_queue.write(raw_insn);
     }
   }
 }
@@ -180,9 +175,7 @@ void load(
   volatile bus_T *weights,
   hls::stream<insn_T> &load_queue,
   hls::stream<bool> &g2l_dep_queue,
-  hls::stream<bool> &a2l_dep_queue,
   hls::stream<bool> &l2g_dep_queue,
-  hls::stream<bool> &l2a_dep_queue,
   bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO],
   bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO]) {
 #pragma HLS INTERFACE m_axi port = inputs offset = slave bundle = data_port
@@ -190,8 +183,6 @@ void load(
 #pragma HLS INTERFACE axis port = load_queue
 #pragma HLS INTERFACE axis port = g2l_dep_queue
 #pragma HLS INTERFACE axis port = l2g_dep_queue
-#pragma HLS INTERFACE axis port = a2l_dep_queue
-#pragma HLS INTERFACE axis port = l2a_dep_queue
 #pragma HLS INTERFACE bram port = wgt_mem
 #pragma HLS INTERFACE bram port = inp_mem
 #pragma HLS INTERFACE s_axilite port = return bundle = CONTROL_BUS
@@ -207,7 +198,6 @@ void load(
   // Pop dependence token if instructed
   if (insn.pop_next_dep) {
     g2l_dep_queue.read();
-    a2l_dep_queue.read();
   }
 
   // Pre-processing
@@ -244,11 +234,10 @@ void load(
   // Push dependence token if instructed
   if (insn.push_next_dep) {
     l2g_dep_queue.write(1);
-    l2a_dep_queue.write(1);
   }
 }
 
-void gemm(
+void gemm_(
   insn_T insn_raw,
   uop_T uop_mem[VTA_UOP_BUFF_DEPTH],
   bus_T acc_mem[VTA_ACC_BUFF_DEPTH][ACC_MAT_AXI_RATIO],
@@ -336,6 +325,64 @@ void gemm(
     dst_offset_out += insn.dst_factor_out;
     src_offset_out += insn.src_factor_out;
     wgt_offset_out += insn.wgt_factor_out;
+  }
+}
+
+
+void gemm(
+  hls::stream<insn_T> &gemm_queue,
+  hls::stream<bool> &l2g_dep_queue,
+  hls::stream<bool> &c2g_dep_queue,
+  hls::stream<bool> &g2l_dep_queue,
+  hls::stream<bool> &g2c_dep_queue,
+  bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO],
+  bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO],
+  bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO]) {
+#pragma HLS INTERFACE axis port = gemm_queue
+#pragma HLS INTERFACE axis port = l2g_dep_queue
+#pragma HLS INTERFACE axis port = c2g_dep_queue
+#pragma HLS INTERFACE axis port = g2l_dep_queue
+#pragma HLS INTERFACE axis port = g2c_dep_queue
+#pragma HLS INTERFACE bram port = inp_mem
+#pragma HLS INTERFACE bram port = wgt_mem
+#pragma HLS INTERFACE bram port = out_mem
+#pragma HLS INTERFACE s_axilite port = return bundle = CONTROL_BUS
+#pragma HLS RESOURCE variable = inp_mem core = RAM_1P
+#pragma HLS RESOURCE variable = wgt_mem core = RAM_1P
+#pragma HLS RESOURCE variable = out_mem core = RAM_1P
+
+  // Micro-op storage
+  static uop_T uop_mem[VTA_UOP_BUFF_DEPTH];
+
+  // Accumulator storage
+  static bus_T acc_mem[VTA_ACC_BUFF_DEPTH][ACC_MAT_AXI_RATIO];
+#pragma HLS ARRAY_RESHAPE variable = acc_mem complete dim=2
+// This is necessary to obtain II=1
+#pragma HLS DEPENDENCE variable = acc_mem inter false
+
+  // Pop GEMM instruction
+  insn_T raw_insn = gemm_queue.read();
+  // Cast to GenericInsn
+  VTAInsn insn;
+  insn_T raw_copy = raw_insn;
+  insn.generic = *((VTAGenericInsn *) &raw_copy);
+
+  // Pop dependence token if instructed
+  if (insn.generic.pop_prev_dep) {
+    l2g_dep_queue.read();
+  }
+  if (insn.generic.pop_next_dep) {
+    c2g_dep_queue.read();
+  }
+
+  gemm_(raw_copy, uop_mem, acc_mem, inp_mem, wgt_mem, out_mem);
+  
+  // Push dependence token if instructed
+  if (insn.generic.push_prev_dep) {
+    g2l_dep_queue.write(1);
+  }
+  if (insn.generic.push_next_dep) {
+    g2c_dep_queue.write(1);
   }
 }
 
@@ -431,22 +478,22 @@ void compute(
   volatile uint32_t &done,
   volatile uop_T *uops,
   volatile bus_T *biases,
-  hls::stream<insn_T> &gemm_queue,
-  hls::stream<bool> &l2g_dep_queue,
-  hls::stream<bool> &s2g_dep_queue,
-  hls::stream<bool> &g2l_dep_queue,
-  hls::stream<bool> &g2s_dep_queue,
+  hls::stream<insn_T> &compute_queue,
+  hls::stream<bool> &g2c_dep_queue,
+  hls::stream<bool> &s2c_dep_queue,
+  hls::stream<bool> &c2g_dep_queue,
+  hls::stream<bool> &c2s_dep_queue,
   bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO],
   bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO],
   bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO]) {
 PRAGMA_HLS(HLS INTERFACE s_axilite port = done bundle = CONTROL_BUS offset = VTA_COMPUTE_DONE_WR_OFFSET)
 #pragma HLS INTERFACE m_axi port = uops offset = slave bundle = uop_port
 #pragma HLS INTERFACE m_axi port = biases offset = slave bundle = data_port
-#pragma HLS INTERFACE axis port = gemm_queue
-#pragma HLS INTERFACE axis port = l2g_dep_queue
-#pragma HLS INTERFACE axis port = s2g_dep_queue
-#pragma HLS INTERFACE axis port = g2l_dep_queue
-#pragma HLS INTERFACE axis port = g2s_dep_queue
+#pragma HLS INTERFACE axis port = compute_queue
+#pragma HLS INTERFACE axis port = g2c_dep_queue
+#pragma HLS INTERFACE axis port = s2c_dep_queue
+#pragma HLS INTERFACE axis port = c2g_dep_queue
+#pragma HLS INTERFACE axis port = c2s_dep_queue
 #pragma HLS INTERFACE bram port = inp_mem
 #pragma HLS INTERFACE bram port = wgt_mem
 #pragma HLS INTERFACE bram port = out_mem
@@ -465,7 +512,7 @@ PRAGMA_HLS(HLS INTERFACE s_axilite port = done bundle = CONTROL_BUS offset = VTA
 #pragma HLS DEPENDENCE variable = acc_mem inter false
 
   // Pop GEMM instruction
-  insn_T raw_insn = gemm_queue.read();
+  insn_T raw_insn = compute_queue.read();
   // Cast to GenericInsn
   VTAInsn insn;
   insn_T raw_copy = raw_insn;
@@ -473,10 +520,10 @@ PRAGMA_HLS(HLS INTERFACE s_axilite port = done bundle = CONTROL_BUS offset = VTA
 
   // Pop dependence token if instructed
   if (insn.generic.pop_prev_dep) {
-    l2g_dep_queue.read();
+    g2c_dep_queue.read();
   }
   if (insn.generic.pop_next_dep) {
-    s2g_dep_queue.read();
+    s2c_dep_queue.read();
   }
 
   // Set done value
@@ -505,31 +552,29 @@ PRAGMA_HLS(HLS INTERFACE s_axilite port = done bundle = CONTROL_BUS offset = VTA
           insn.mem.x_size,
           insn.mem.x_stride);
     }
-  } else if (insn.generic.opcode == VTA_OPCODE_GEMM) {
-    gemm(raw_copy, uop_mem, acc_mem, inp_mem, wgt_mem, out_mem);
-  } else if (insn.generic.opcode == VTA_OPCODE_ALU) {
+  }  else if (insn.generic.opcode == VTA_OPCODE_ALU) {
     alu(raw_copy, uop_mem, acc_mem, inp_mem, wgt_mem, out_mem);
   }
 
   // Push dependence token if instructed
   if (insn.generic.push_prev_dep) {
-    g2l_dep_queue.write(1);
+    c2g_dep_queue.write(1);
   }
   if (insn.generic.push_next_dep) {
-    g2s_dep_queue.write(1);
+    c2s_dep_queue.write(1);
   }
 }
 
 void store(
   volatile bus_T *outputs,
   hls::stream<insn_T> &store_queue,
-  hls::stream<bool> &g2s_dep_queue,
-  hls::stream<bool> &s2g_dep_queue,
+  hls::stream<bool> &c2s_dep_queue,
+  hls::stream<bool> &s2c_dep_queue,
   bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO]) {
 #pragma HLS INTERFACE m_axi port = outputs offset = slave bundle = data_port
 #pragma HLS INTERFACE axis port = store_queue
-#pragma HLS INTERFACE axis port = g2s_dep_queue
-#pragma HLS INTERFACE axis port = s2g_dep_queue
+#pragma HLS INTERFACE axis port = c2s_dep_queue
+#pragma HLS INTERFACE axis port = s2c_dep_queue
 #pragma HLS INTERFACE bram port = out_mem
 #pragma HLS INTERFACE s_axilite port = return bundle = CONTROL_BUS
 #pragma HLS RESOURCE variable = out_mem core = RAM_1P
@@ -542,7 +587,7 @@ void store(
 
   // Pop dependence token if instructed
   if (insn.pop_prev_dep) {
-    g2s_dep_queue.read();
+    c2s_dep_queue.read();
   }
 
   // Initialize indices
@@ -564,7 +609,7 @@ void store(
 
   // Push dependence token if instructed
   if (insn.push_prev_dep) {
-    s2g_dep_queue.write(1);
+    s2c_dep_queue.write(1);
   }
 }
 
@@ -577,12 +622,12 @@ void vta(
   volatile bus_T *biases,
   volatile bus_T *outputs) {
 #pragma HLS INTERFACE s_axilite port = insn_count bundle = CONTROL_BUS
-#pragma HLS INTERFACE m_axi depth=1024 port = insns offset = slave bundle = ins_port
-#pragma HLS INTERFACE m_axi depth=1024 port = uops offset = slave bundle = uop_port
-#pragma HLS INTERFACE m_axi depth=1024 port = inputs offset = slave bundle = data_port
-#pragma HLS INTERFACE m_axi depth=1024 port = weights offset = slave bundle = data_port
-#pragma HLS INTERFACE m_axi depth=1024 port = biases offset = slave bundle = data_port
-#pragma HLS INTERFACE m_axi depth=1024 port = outputs offset = slave bundle = data_port
+#pragma HLS INTERFACE m_axi port = insns offset = slave bundle = ins_port
+#pragma HLS INTERFACE m_axi port = uops offset = slave bundle = uop_port
+#pragma HLS INTERFACE m_axi port = inputs offset = slave bundle = data_port
+#pragma HLS INTERFACE m_axi port = weights offset = slave bundle = data_port
+#pragma HLS INTERFACE m_axi port = biases offset = slave bundle = data_port
+#pragma HLS INTERFACE m_axi port = outputs offset = slave bundle = data_port
 #pragma HLS INTERFACE s_axilite port = return bundle = CONTROL_BUS
 
   // Instantiate temporary instruction queues (used for peeking)
@@ -590,6 +635,8 @@ void vta(
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=tmp_load_queue)
   hls::stream<insn_T> tmp_gemm_queue;
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=tmp_gemm_queue)
+  hls::stream<insn_T> tmp_compute_queue;
+  PRAGMA_HLS(HLS stream dpeth=STREAM_IN_DEPTH variable=tmp_compute_queue)
   hls::stream<insn_T> tmp_store_queue;
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=tmp_store_queue)
 
@@ -598,26 +645,31 @@ void vta(
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=load_queue)
   hls::stream<insn_T> gemm_queue;
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=gemm_queue)
+  hls::stream<insn_T> compute_queue;
+  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=compute_queue)
   hls::stream<insn_T> store_queue;
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=store_queue)
 
   // Dependence queues
   hls::stream<bool> l2g_dep_queue;
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=l2g_dep_queue)
-  hls::stream<bool> s2g_dep_queue;
-  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=s2g_dep_queue)
+  hls::stream<bool> g2c_dep_queue;
+  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=g2c_dep_queue)
+  hls::stream<bool> c2s_dep_queue;
+  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=c2s_dep_queue)
+  hls::stream<bool> s2c_dep_queue;
+  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=s2c_dep_queue)
+  hls::stream<bool> c2g_dep_queue;
+  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=c2g_dep_queue)
   hls::stream<bool> g2l_dep_queue;
   PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=g2l_dep_queue)
-  hls::stream<bool> g2s_dep_queue;
-  PRAGMA_HLS(HLS stream depth=STREAM_IN_DEPTH variable=g2s_dep_queue)
-
   // Instantiate memories
   bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO];
   bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO];
   bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO];
 
   // Push all instructions into the queues
-  fetch(insn_count, insns, tmp_load_queue, tmp_gemm_queue, tmp_store_queue);
+  fetch(insn_count, insns, tmp_load_queue, tmp_gemm_queue, tmp_compute_queue, tmp_store_queue);
 
   // Global done indicator
   uint32_t done = 0;
@@ -625,11 +677,13 @@ void vta(
   // Temporary instructions
   insn_T tmp_load;
   insn_T tmp_gemv;
+  insn_T tmp_compute;
   insn_T tmp_store;
 
   // Peeking status
   bool tmp_load_popped = false;
   bool tmp_gemm_popped = false;
+  bool tmp_compute_popped = false;
   bool tmp_store_popped = false;
   int exit_counter = 0;
 
@@ -666,9 +720,9 @@ void vta(
       VTAGenericInsn insn = *((VTAGenericInsn *) &tmp_gemv);
       if (
         (insn.pop_prev_dep && !l2g_dep_queue.empty() &&
-         insn.pop_next_dep && !s2g_dep_queue.empty()) ||
+         insn.pop_next_dep && !c2g_dep_queue.empty()) ||
         (!insn.pop_prev_dep && insn.pop_next_dep &&
-         !s2g_dep_queue.empty()) ||
+         !c2g_dep_queue.empty()) ||
         (insn.pop_prev_dep && !l2g_dep_queue.empty() &&
         !insn.pop_next_dep) ||
         (!insn.pop_prev_dep && !insn.pop_next_dep)
@@ -676,15 +730,44 @@ void vta(
         // Push the instruction in the load queue
         gemm_queue.write(tmp_gemv);
         tmp_gemm_popped = false;
-        compute(done, uops, biases, gemm_queue, l2g_dep_queue, s2g_dep_queue,
-                g2l_dep_queue, g2s_dep_queue, inp_mem, wgt_mem, out_mem);
+        gemm(gemm_queue, l2g_dep_queue, c2g_dep_queue,
+                g2l_dep_queue, g2c_dep_queue, inp_mem, wgt_mem, out_mem);
       } else {
         // Execution of load stage pending on completion of other stages,
         // so break here...
         break;
       }
     }
-    // Finally execute as many store instructions as possible
+    // Next execute as many compute instructions as possible
+    while (!tmp_compute_queue.empty() || tmp_compute_popped == true) {
+      // Pop the compute instruction
+      if (!tmp_compute_popped) {
+        tmp_compute_queue.read(tmp_compute);
+        tmp_compute_popped = true;
+      }
+      // Check dependences and invoke the compute stage
+      VTAGenericInsn insn = *((VTAGenericInsn *) &tmp_compute);
+      if (
+        (insn.pop_prev_dep && !g2c_dep_queue.empty() &&
+         insn.pop_next_dep && !s2c_dep_queue.empty()) ||
+        (!insn.pop_prev_dep && insn.pop_next_dep &&
+         !s2c_dep_queue.empty()) ||
+        (insn.pop_prev_dep && !g2c_dep_queue.empty() &&
+        !insn.pop_next_dep) ||
+        (!insn.pop_prev_dep && !insn.pop_next_dep)
+      ) {
+        // Push the instruction in the compute queue
+        compute_queue.write(tmp_compute);
+        tmp_compute_popped = false;
+        compute(done, uops, biases, compute_queue, g2c_dep_queue, s2c_dep_queue,
+                c2g_dep_queue, c2s_dep_queue, inp_mem, wgt_mem, out_mem);
+      } else {
+        // Execution of load stage pending on completion of other stages,
+        // so break here...
+        break;
+      }
+    }
+ // Finally execute as many store instructions as possible
     while (!tmp_store_queue.empty() || tmp_store_popped == true) {
       // Pop the load instruction
       if (!tmp_store_popped) {
@@ -694,12 +777,12 @@ void vta(
       // Check dependences and invoke the load stage
       VTAGenericInsn insn = *((VTAGenericInsn *) &tmp_store);
 
-      if ((insn.pop_prev_dep && !g2s_dep_queue.empty()) ||
+      if ((insn.pop_prev_dep && !c2s_dep_queue.empty()) ||
           !insn.pop_prev_dep) {
         // Push the instruction in the load queue
         store_queue.write(tmp_store);
         tmp_store_popped = false;
-        store(outputs, store_queue, g2s_dep_queue, s2g_dep_queue, out_mem);
+        store(outputs, store_queue, c2s_dep_queue, s2c_dep_queue, out_mem);
       } else {
         // Execution of load stage pending on completion of other stages, so break here...
         break;
@@ -721,12 +804,12 @@ void vta(
         if (l2g_dep_queue.empty() && insn.pop_prev_dep) {
           printf("waiting on l2g\n");
         }
-        if (s2g_dep_queue.empty() && insn.pop_next_dep) {
+        if (c2g_dep_queue.empty() && insn.pop_next_dep) {
           printf("waiting on s2g\n");
         }
       }
       if (tmp_store_popped) {
-        if (g2s_dep_queue.empty()) {
+        if (c2s_dep_queue.empty()) {
           printf("waiting on g2s\n");
         }
       }
@@ -737,21 +820,30 @@ void vta(
   // Ensure that the tokens are empty
   bool tmp_tok;
   int l2g_count = 0;
-  int s2g_count = 0;
+  int g2c_count = 0;
+  int c2s_count = 0;
+  int s2c_count = 0;
+  int c2g_count = 0;
   int g2l_count = 0;
-  int g2s_count = 0;
+
   while (l2g_dep_queue.read_nb(tmp_tok)) {
     l2g_count++;
   }
-  while (s2g_dep_queue.read_nb(tmp_tok)) {
-    s2g_count++;
+  while (g2c_dep_queue.read_nb(tmp_tok)) {
+    g2c_count++;
   }
-  while (g2l_dep_queue.read_nb(tmp_tok)) {
+  while (c2s_dep_queue.read_nb(tmp_tok)) {
+    c2s_count++;
+  }
+  while (c2s_dep_queue.read_nb(tmp_tok)) {
+    s2c_count++;
+  }
+  while (c2s_dep_queue.read_nb(tmp_tok)) {
+    c2g_count++;
+  }
+  while (c2s_dep_queue.read_nb(tmp_tok)) {
     g2l_count++;
   }
-  while (g2s_dep_queue.read_nb(tmp_tok)) {
-    g2s_count++;
-  }
 
-  assert(l2g_count == 0 && s2g_count == 0 && g2l_count == 0 && g2s_count == 0);
+  assert(l2g_count == 0 && g2c_count == 0 && c2s_count == 0 && s2c_count == 0 && c2g_count == 0 && g2l_count == 0);
 }

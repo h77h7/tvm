@@ -65,77 +65,42 @@ proc init_design {} {
 
     # HLS pragmas to reshape/partition the input memory read/write port
     set_directive_array_reshape -type block -factor $::inp_reshape_factor -dim 2 "load" inp_mem
-    set_directive_array_reshape -type block -factor $::inp_reshape_factor -dim 2 "compute" inp_mem
+    set_directive_array_reshape -type block -factor $::inp_reshape_factor -dim 2 "gemm" inp_mem
     if {$::inp_partition_factor > 1} {
         set_directive_array_partition -type block -factor $::inp_partition_factor -dim 2 "load" inp_mem
-        set_directive_array_partition -type block -factor $::inp_partition_factor -dim 2 "compute" inp_mem
+        set_directive_array_partition -type block -factor $::inp_partition_factor -dim 2 "gemm" inp_mem
     }
     # HLS pragmas to reshape/partition the weight memory read/write port
     set_directive_array_reshape -type block -factor $::wgt_reshape_factor -dim 2 "load" wgt_mem
-    set_directive_array_reshape -type block -factor $::wgt_reshape_factor -dim 2 "compute" wgt_mem
+    set_directive_array_reshape -type block -factor $::wgt_reshape_factor -dim 2 "gemm" wgt_mem
     if {$::wgt_partition_factor >1} {
         set_directive_array_partition -type block -factor $::wgt_partition_factor -dim 2 "load" wgt_mem
-        set_directive_array_partition -type block -factor $::wgt_partition_factor -dim 2 "compute" wgt_mem
+        set_directive_array_partition -type block -factor $::wgt_partition_factor -dim 2 "gemm" wgt_mem
     }
     # HLS pragmas to reshape/partition the output memory read/write port
     set_directive_array_reshape -type block -factor $::out_reshape_factor -dim 2 "compute" out_mem
     set_directive_array_reshape -type block -factor $::out_reshape_factor -dim 2 "store" out_mem
+    set_directive_array_reshape -type block -factor $::out_reshape_factor -dim 2 "gemm" out_mem
     if {$::out_partition_factor > 1} {
         set_directive_array_partition -type block -factor $::out_partition_factor -dim 2 "compute" out_mem
         set_directive_array_partition -type block -factor $::out_partition_factor -dim 2 "store" out_mem
+        set_directive_array_partition -type block -factor $::out_partition_factor -dim 2 "gemm" out_mem
     }
 }
 
 # HLS behavioral sim
-open_project vta_sim
+open_project -reset vta_sim
 set_top vta
 add_files $src_dir/vta.cc -cflags $cflags
 add_files -tb $sim_dir/vta_test.cc -cflags $cflags
 add_files -tb $test_dir/test_lib.cc -cflags $cflags
 open_solution "soln"
+set_part {xc7z020clg400-1}
+#source "./vta_hls/soln/directives.tcl"
 init_design
-csim_design -clean
-close_project
-
-# Generate fetch stage
-open_project vta_fetch
-set_top fetch
-add_files $src_dir/vta.cc -cflags $cflags
-open_solution "soln"
-init_design
+csim_design
 csynth_design
 export_design -format ip_catalog
-close_project
-
-# Generate load stage
-open_project vta_load
-set_top load
-add_files $src_dir/vta.cc -cflags $cflags
-open_solution "soln"
-init_design
-csynth_design
-export_design -format ip_catalog
-close_project
-
-# Generate compute stage
-open_project vta_compute
-set_top compute
-add_files $src_dir/vta.cc -cflags $cflags
-open_solution "soln"
-init_design
-csynth_design
-export_design -format ip_catalog
-close_project
-
-# Generate store stage
-open_project vta_store
-set_top store
-add_files $src_dir/vta.cc -cflags $cflags
-open_solution "soln"
-init_design
-csynth_design
-export_design -format ip_catalog
-close_project
 
 exit
 

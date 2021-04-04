@@ -128,6 +128,7 @@ void fetch(
   volatile insn_T *insns,
   hls::stream<insn_T> &load_queue,
   hls::stream<insn_T> &gemm_queue,
+  hls::stream<insn_T> &compute_queue,
   hls::stream<insn_T> &store_queue);
 
 /*!
@@ -153,6 +154,16 @@ void load(
   hls::stream<bool> &l2g_dep_queue,
   bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO],
   bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO]);
+
+void gemm(
+  hls::stream<insn_T> &gemm_queue,
+  hls::stream<bool> &l2g_dep_queue,
+  hls::stream<bool> &c2g_dep_queue,
+  hls::stream<bool> &g2l_dep_queue,
+  hls::stream<bool> &g2c_dep_queue,
+  bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO],
+  bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO],
+  bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO]); 
 
 /*!
 * \brief Compute module.
@@ -181,11 +192,11 @@ void compute(
   volatile uint32_t &done,
   volatile uop_T *uops,
   volatile bus_T *biases,
-  hls::stream<insn_T> &gemm_queue,
-  hls::stream<bool> &l2g_dep_queue,
-  hls::stream<bool> &s2g_dep_queue,
-  hls::stream<bool> &g2l_dep_queue,
-  hls::stream<bool> &g2s_dep_queue,
+  hls::stream<insn_T> &compute_queue,
+  hls::stream<bool> &g2c_dep_queue,
+  hls::stream<bool> &s2c_dep_queue,
+  hls::stream<bool> &c2g_dep_queue,
+  hls::stream<bool> &c2s_dep_queue,
   bus_T inp_mem[VTA_INP_BUFF_DEPTH][INP_MAT_AXI_RATIO],
   bus_T wgt_mem[VTA_WGT_BUFF_DEPTH][WGT_MAT_AXI_RATIO],
   bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO]);
@@ -206,8 +217,8 @@ void compute(
 void store(
   volatile bus_T *outputs,
   hls::stream<insn_T> &store_queue,
-  hls::stream<bool> &g2s_dep_queue,
-  hls::stream<bool> &s2g_dep_queue,
+  hls::stream<bool> &c2s_dep_queue,
+  hls::stream<bool> &s2c_dep_queue,
   bus_T out_mem[VTA_ACC_BUFF_DEPTH][OUT_MAT_AXI_RATIO]);
 
 /*!
