@@ -98,6 +98,7 @@ class VTADevice {
     // VTA stage handles
     vta_fetch_handle_ = VTAMapRegister(VTA_FETCH_ADDR);
     vta_load_handle_ = VTAMapRegister(VTA_LOAD_ADDR);
+    vta_gemm_handle_ = VTAMapRegister(VTA_GEMM_ADDR);
     vta_compute_handle_ = VTAMapRegister(VTA_COMPUTE_ADDR);
     vta_store_handle_ = VTAMapRegister(VTA_STORE_ADDR);
   }
@@ -106,6 +107,7 @@ class VTADevice {
     // Close VTA stage handle
     VTAUnmapRegister(vta_fetch_handle_);
     VTAUnmapRegister(vta_load_handle_);
+    VTAUnmapRegister(vta_gemm_handle_);
     VTAUnmapRegister(vta_compute_handle_);
     VTAUnmapRegister(vta_store_handle_);
   }
@@ -124,6 +126,7 @@ class VTADevice {
     // VTA start
     VTAWriteMappedReg(vta_fetch_handle_, 0x0, VTA_START);
     VTAWriteMappedReg(vta_load_handle_, 0x0, VTA_AUTORESTART);
+    VTAWriteMappedReg(vta_gemm_handle_, 0x0, VTA_AUTORESTART);
     VTAWriteMappedReg(vta_compute_handle_, 0x0, VTA_AUTORESTART);
     VTAWriteMappedReg(vta_store_handle_, 0x0, VTA_AUTORESTART);
 
@@ -146,6 +149,7 @@ class VTADevice {
   // VTA handles (register maps)
   void* vta_fetch_handle_{nullptr};
   void* vta_load_handle_{nullptr};
+  void* vta_gemm_handle_{nullptr};
   void* vta_compute_handle_{nullptr};
   void* vta_store_handle_{nullptr};
 };

@@ -54,6 +54,7 @@ uint64_t vta(
   // Get VTA handles
   void* vta_fetch_handle = VTAMapRegister(VTA_FETCH_ADDR);
   void* vta_load_handle = VTAMapRegister(VTA_LOAD_ADDR);
+  void* vta_gemm_handle = VTAMapRegister(VTA_GEMM_ADDR);
   void* vta_compute_handle = VTAMapRegister(VTA_COMPUTE_ADDR);
   void* vta_store_handle = VTAMapRegister(VTA_STORE_ADDR);
 
@@ -82,6 +83,7 @@ uint64_t vta(
   // VTA start
   VTAWriteMappedReg(vta_fetch_handle, 0x0, 0x1);
   VTAWriteMappedReg(vta_load_handle, 0x0, 0x81);
+  VTAWriteMappedReg(vta_gemm_handle, 0x0, 0x81);
   VTAWriteMappedReg(vta_compute_handle, 0x0, 0x81);
   VTAWriteMappedReg(vta_store_handle, 0x0, 0x81);
 
@@ -105,6 +107,7 @@ uint64_t vta(
   // Unmap VTA register
   VTAUnmapRegister(vta_fetch_handle);
   VTAUnmapRegister(vta_load_handle);
+  VTAUnmapRegister(vta_gemm_handle);
   VTAUnmapRegister(vta_compute_handle);
   VTAUnmapRegister(vta_store_handle);
 
@@ -575,9 +578,12 @@ void printParameters() {
 void printInstruction(int num_insn, VTAGenericInsn *insns) {
   // Keep tabs on dependence queues
   int l2g_queue = 0;
+  int g2c_queue = 0;
+  int c2s_queue = 0;
+  int s2c_queue = 0;
+  int c2g_queue = 0;
   int g2l_queue = 0;
-  int s2g_queue = 0;
-  int g2s_queue = 0;
+
   // Converter
   union VTAInsn c;
   // Iterate over all instructions
@@ -616,8 +622,8 @@ void printInstruction(int num_insn, VTAGenericInsn *insns) {
              static_cast<int>(c.mem.x_pad_0),
              static_cast<int>(c.mem.x_pad_1));
       if (c.mem.opcode == VTA_OPCODE_STORE) {
-        if (c.mem.pop_prev_dep) g2s_queue--;
-        if (c.mem.push_prev_dep) s2g_queue++;
+        if (c.mem.pop_prev_dep) c2s_queue--;
+        if (c.mem.push_prev_dep) s2c_queue++;
       } else if (c.mem.opcode == VTA_OPCODE_LOAD &&
         (c.mem.memory_type == VTA_MEM_ID_INP || c.mem.memory_type == VTA_MEM_ID_WGT)) {
         if (c.mem.pop_next_dep) g2l_queue--;
@@ -625,8 +631,8 @@ void printInstruction(int num_insn, VTAGenericInsn *insns) {
       } else {
         if (c.mem.pop_prev_dep) l2g_queue--;
         if (c.mem.push_prev_dep) g2l_queue++;
-        if (c.mem.pop_next_dep) s2g_queue--;
-        if (c.mem.push_next_dep) g2s_queue++;
+        if (c.mem.pop_next_dep) s2c_queue--;
+        if (c.mem.push_next_dep) c2s_queue++;
       }
     } else if (c.mem.opcode == VTA_OPCODE_GEMM) {
       // Print instruction field information
@@ -652,8 +658,8 @@ void printInstruction(int num_insn, VTAGenericInsn *insns) {
              static_cast<int>(c.gemm.wgt_factor_in));
       if (c.gemm.pop_prev_dep) l2g_queue--;
       if (c.gemm.push_prev_dep) g2l_queue++;
-      if (c.gemm.pop_next_dep) s2g_queue--;
-      if (c.gemm.push_next_dep) g2s_queue++;
+      if (c.gemm.pop_next_dep) c2g_queue--;
+      if (c.gemm.push_next_dep) g2c_queue++;
     } else if (c.mem.opcode == VTA_OPCODE_FINISH) {
       printf("FINISH\n");
       printf("\tdep - pop prev: %d, pop next: %d, push prev: %d, push next: %d\n",
@@ -663,8 +669,8 @@ void printInstruction(int num_insn, VTAGenericInsn *insns) {
              static_cast<int>(c.mem.push_next_dep));
       if (c.gemm.pop_prev_dep) l2g_queue--;
       if (c.gemm.push_prev_dep) g2l_queue++;
-      if (c.gemm.pop_next_dep) s2g_queue--;
-      if (c.gemm.push_next_dep) g2s_queue++;
+      if (c.gemm.pop_next_dep) c2g_queue--;
+      if (c.gemm.push_next_dep) g2c_queue++;
     } else if (c.mem.opcode == VTA_OPCODE_ALU) {
       // Print instruction field information
       printf("ALU - %s\n", getOpcodeString(c.alu.alu_opcode, c.alu.use_imm));
@@ -685,14 +691,15 @@ void printInstruction(int num_insn, VTAGenericInsn *insns) {
              static_cast<int>(c.alu.iter_in),
              static_cast<int>(c.alu.dst_factor_in),
              static_cast<int>(c.alu.src_factor_in));
-      if (c.alu.pop_prev_dep) l2g_queue--;
-      if (c.alu.push_prev_dep) g2l_queue++;
-      if (c.alu.pop_next_dep) s2g_queue--;
-      if (c.alu.push_next_dep) g2s_queue++;
+      if (c.alu.pop_prev_dep) g2c_queue--;
+      if (c.alu.push_prev_dep) c2g_queue++;
+      if (c.alu.pop_next_dep) s2c_queue--;
+      if (c.alu.push_next_dep) c2s_queue++;
     }
   }
   printf("DEBUG - l2g_queue = %d, g2l_queue = %d\n", l2g_queue, g2l_queue);
-  printf("DEBUG - s2g_queue = %d, g2s_queue = %d\n", s2g_queue, g2s_queue);
+  printf("DEBUG - g2c_queue = %d, c2g_queue = %d\n", g2c_queue, c2g_queue);
+  printf("DEBUG - s2c_queue = %d, c2s_queue = %d\n", s2c_queue, c2s_queue);
 }
 
 // Helper function: Print micro-ops status

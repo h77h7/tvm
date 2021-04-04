@@ -805,12 +805,12 @@ void vta(
           printf("waiting on l2g\n");
         }
         if (c2g_dep_queue.empty() && insn.pop_next_dep) {
-          printf("waiting on s2g\n");
+          printf("waiting on c2g\n");
         }
       }
       if (tmp_store_popped) {
         if (c2s_dep_queue.empty()) {
-          printf("waiting on g2s\n");
+          printf("waiting on c2s\n");
         }
       }
       break;
@@ -835,13 +835,13 @@ void vta(
   while (c2s_dep_queue.read_nb(tmp_tok)) {
     c2s_count++;
   }
-  while (c2s_dep_queue.read_nb(tmp_tok)) {
+  while (s2c_dep_queue.read_nb(tmp_tok)) {
     s2c_count++;
   }
-  while (c2s_dep_queue.read_nb(tmp_tok)) {
+  while (c2g_dep_queue.read_nb(tmp_tok)) {
     c2g_count++;
   }
-  while (c2s_dep_queue.read_nb(tmp_tok)) {
+  while (g2l_dep_queue.read_nb(tmp_tok)) {
     g2l_count++;
   }
 
